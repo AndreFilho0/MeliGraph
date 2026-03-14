@@ -70,6 +70,15 @@ defmodule MeliGraph.Graph.IdMap do
     :ets.info(table_name(conf, :forward), :size)
   end
 
+  @doc """
+  Retorna todos os pares `{internal_id, external_id}` mapeados.
+  Usado pelo GlobalRank para iterar sobre todos os vértices do grafo.
+  """
+  @spec all_ids(Config.t()) :: [{non_neg_integer(), term()}]
+  def all_ids(conf) do
+    :ets.tab2list(table_name(conf, :reverse))
+  end
+
   # --- Server callbacks ---
 
   @impl true

@@ -52,17 +52,26 @@ defmodule MeliGraph.Query do
   defp compute_inline(conf, external_id, type, opts) do
     algorithm = resolve_algorithm(Keyword.get(opts, :algorithm, :pagerank))
 
-    case IdMap.get_internal(conf, external_id) do
-      nil ->
-        {:ok, []}
+    if global_algorithm?(algorithm) do
+      algorithm.compute(conf, 0, type, opts)
+    else
+      case IdMap.get_internal(conf, external_id) do
+        nil ->
+          {:ok, []}
 
-      internal_id ->
-        algorithm.compute(conf, internal_id, type, opts)
+        internal_id ->
+          algorithm.compute(conf, internal_id, type, opts)
+      end
     end
   end
 
+  defp global_algorithm?(MeliGraph.Algorithm.GlobalRank), do: true
+  defp global_algorithm?(_), do: false
+
   defp resolve_algorithm(:pagerank), do: MeliGraph.Algorithm.PageRank
   defp resolve_algorithm(:salsa), do: MeliGraph.Algorithm.SALSA
+  defp resolve_algorithm(:similar_items), do: MeliGraph.Algorithm.SimilarItems
+  defp resolve_algorithm(:global_rank), do: MeliGraph.Algorithm.GlobalRank
 
   defp resolve_algorithm(module) when is_atom(module) do
     if Code.ensure_loaded?(module) and function_exported?(module, :compute, 4) do

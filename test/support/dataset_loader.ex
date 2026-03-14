@@ -118,12 +118,60 @@ defmodule MeliGraph.DatasetLoader do
   # --- Professores ---
 
   @doc """
-  Carrega o grafo bipartido de interações profile ↔ professor.
+  Carrega o grafo bipartido de interações profile ↔ professor a partir de
+  ratings e posts sobre professores. Cada interação é inserida como aresta
+  bidirecional (profile → professor e professor → profile), permitindo
+  que random walks (PageRank/SALSA) atravessem o grafo bipartido.
 
-  Cada interação (like em post sobre professor) é inserida como aresta
-  bidirecional, permitindo que PageRank e SALSA atravessem o grafo.
-  Deduplica por `{profile_id, professor_id}`.
-  Retorna `{:ok, %{inserted: n, duplicates: n}}`.
+  Deduplica por `{profile_id, professor_id}` em cada fonte.
+  Retorna `{:ok, %{ratings: n, posts: n, total_edges: n}}`.
+  """
+  def load_professor_graph(graph_name, opts \\ []) do
+    ratings_count = load_professor_ratings(graph_name, opts)
+    posts_count = load_professor_posts(graph_name, opts)
+
+    {:ok, %{ratings: ratings_count, posts: posts_count, total_edges: ratings_count + posts_count}}
+  end
+
+  defp load_professor_ratings(graph_name, opts) do
+    path = csv_path("meli_graph_professor_ratings.csv", opts)
+
+    rows =
+      path
+      |> stream_csv()
+      |> Enum.uniq_by(fn row -> {row["profile_id"], row["professor_id"]} end)
+
+    Enum.each(rows, fn row ->
+      profile   = "profile:#{row["profile_id"]}"
+      professor = "professor:#{row["professor_id"]}"
+      MeliGraph.insert_edge(graph_name, profile, professor, :avaliou)
+      MeliGraph.insert_edge(graph_name, professor, profile, :avaliou)
+    end)
+
+    length(rows)
+  end
+
+  defp load_professor_posts(graph_name, opts) do
+    path = csv_path("meli_graph_professor_posts.csv", opts)
+
+    rows =
+      path
+      |> stream_csv()
+      |> Enum.uniq_by(fn row -> {row["profile_id"], row["professor_id"]} end)
+
+    Enum.each(rows, fn row ->
+      profile   = "profile:#{row["profile_id"]}"
+      professor = "professor:#{row["professor_id"]}"
+      MeliGraph.insert_edge(graph_name, profile, professor, :postou)
+      MeliGraph.insert_edge(graph_name, professor, profile, :postou)
+    end)
+
+    length(rows)
+  end
+
+  @doc """
+  Carrega o grafo bipartido de interações profile ↔ professor (formato antigo).
+  Mantido para compatibilidade com testes existentes.
   """
   def load_professor_interactions(graph_name, opts \\ []) do
     path = csv_path("meli_graph_profile_professor.csv", opts)
@@ -145,7 +193,41 @@ defmodule MeliGraph.DatasetLoader do
   end
 
   @doc """
-  Retorna as interações profile→professor únicas como lista de maps.
+  Retorna as avaliações como lista de maps.
+  """
+  def read_professor_ratings(opts \\ []) do
+    csv_path("meli_graph_professor_ratings.csv", opts)
+    |> stream_csv()
+    |> Enum.map(fn row ->
+      %{
+        profile_id:   "profile:#{row["profile_id"]}",
+        professor_id: "professor:#{row["professor_id"]}",
+        nota:         parse_int(row["nota"]),
+        inserted_at:  row["inserted_at"]
+      }
+    end)
+  end
+
+  @doc """
+  Retorna os posts sobre professores como lista de maps.
+  """
+  def read_professor_posts(opts \\ []) do
+    csv_path("meli_graph_professor_posts.csv", opts)
+    |> stream_csv()
+    |> Enum.map(fn row ->
+      %{
+        profile_id:   "profile:#{row["profile_id"]}",
+        professor_id: "professor:#{row["professor_id"]}",
+        post_id:      "post:#{row["post_id"]}",
+        likes_count:  parse_int(row["likes_count"]),
+        type:         row["type"],
+        inserted_at:  row["inserted_at"]
+      }
+    end)
+  end
+
+  @doc """
+  Retorna as interações profile→professor únicas como lista de maps (formato antigo).
   """
   def read_professor_interactions(opts \\ []) do
     csv_path("meli_graph_profile_professor.csv", opts)
