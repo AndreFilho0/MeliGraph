@@ -106,6 +106,98 @@ Eventos emitidos para observabilidade:
 [:meli_graph, :plugin, :cache_clean, :start | :stop | :exception]
 ```
 
+## Testes
+
+A suite de testes é dividida em dois grupos: **unitários** (rápidos, sem dependências externas) e **integração** (usam dados reais exportados do banco).
+
+### Testes unitários
+
+Rodam sem nenhuma configuração adicional. Todos os processos são síncronos via `testing: :sync`.
+
+```bash
+mix test
+```
+
+```
+75 tests, 0 failures
+```
+
+### Testes de integração com dados reais
+
+Os testes de integração carregam CSVs exportados do banco de produção e validam os algoritmos com dados reais.
+
+#### 1. Exportar os dados
+
+Execute no seu banco PostgreSQL:
+
+```sql
+\copy (
+  SELECT from_profile_id, to_profile_id, inserted_at
+  FROM follows
+  WHERE from_profile_id IS NOT NULL AND to_profile_id IS NOT NULL
+  ORDER BY inserted_at
+) TO 'tmp/meli_graph_follows.csv' WITH CSV HEADER
+
+\copy (
+  SELECT profile_id, post_id, inserted_at
+  FROM likes
+  WHERE profile_id IS NOT NULL AND post_id IS NOT NULL
+  ORDER BY inserted_at
+) TO 'tmp/meli_graph_likes.csv' WITH CSV HEADER
+
+\copy (
+  SELECT id AS post_id, profile_id, likes_count, reposts_count, category, type, inserted_at
+  FROM posts
+  WHERE removed = false AND profile_id IS NOT NULL
+  ORDER BY inserted_at
+) TO 'tmp/meli_graph_posts.csv' WITH CSV HEADER
+```
+
+Os arquivos devem ficar em `tmp/` na raiz do projeto:
+
+```
+tmp/
+├── meli_graph_follows.csv
+├── meli_graph_likes.csv
+└── meli_graph_posts.csv
+```
+
+#### 2. Rodar os testes de integração
+
+```bash
+# Só os testes de integração
+mix test test/integration/ --include integration
+
+# Tudo junto (unitários + integração)
+mix test --include integration
+```
+
+#### O que cada teste valida
+
+| Arquivo | O que testa |
+|---------|-------------|
+| `dataset_stats_test.exs` | Valida integridade dos CSVs e imprime estatísticas do dataset |
+| `follows_graph_test.exs` | Grafo social: "Who to Follow" via PageRank, seguidores, simetria de follows |
+| `likes_graph_test.exs` | Grafo bipartido: feed de posts via SALSA e PageRank, distribuição de likes |
+
+#### Saída esperada (exemplo com dataset real)
+
+```
+[Follows] Grafo carregado: 55 arestas, 37 vértices
+
+  Who to Follow para profile:166:
+    profile:5   score: 0.2254
+    profile:6   score: 0.1532
+    profile:61  score: 0.1127
+    ...
+
+[Likes] Grafo carregado: 33 arestas únicas (144 duplicatas removidas)
+
+  post:28 foi curtido por 4 perfil(s): [profile:5, profile:17, profile:27, profile:61]
+```
+
+> Os testes de integração são excluídos por padrão em `mix test` para não exigir os CSVs em ambientes de CI. Veja [docs/testing.md](docs/testing.md) para mais detalhes.
+
 ## Documentação Técnica
 
 - [Arquitetura](docs/architecture.md) — Camadas, supervision tree e fluxo de dados
@@ -149,8 +241,28 @@ lib/
 │       ├── cache_cleaner.ex         # TTL cleanup
 │       └── supervisor.ex            # Supervisor dos plugins
 test/
-├── 14 arquivos de teste (75 testes)
-└── support/graph_helpers.ex         # Test helpers
+├── meli_graph_test.exs              # Testes de integração da API pública
+├── meli_graph/                      # Testes unitários por módulo
+│   ├── config_test.exs
+│   ├── registry_test.exs
+│   ├── telemetry_test.exs
+│   ├── graph/
+│   ├── ingestion/
+│   ├── algorithm/
+│   ├── query/
+│   ├── store/
+│   └── plugins/
+├── integration/                     # Testes com dados reais (tag :integration)
+│   ├── dataset_stats_test.exs       # Valida integridade dos CSVs
+│   ├── follows_graph_test.exs       # Who to Follow com dados reais
+│   └── likes_graph_test.exs        # Feed de recomendações com dados reais
+└── support/
+    ├── graph_helpers.ex             # Helpers para testes unitários
+    └── dataset_loader.ex            # Carrega CSVs de produção
+tmp/
+├── meli_graph_follows.csv           # Exportado do banco (não versionado)
+├── meli_graph_likes.csv
+└── meli_graph_posts.csv
 ```
 
 ## Roadmap
@@ -167,7 +279,7 @@ test/
 - [x] Plugin system (Pruner + CacheCleaner)
 - [x] Telemetry spans
 - [x] Modo de testing `:sync`
-- [x] 75 testes
+- [x] 75 testes unitários + 20 testes de integração com dados reais
 
 ### v0.2 (planejado)
 - [ ] Similarity queries (cosine via sampling)

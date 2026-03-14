@@ -32,7 +32,9 @@ defmodule MeliGraph.MixProject do
     [
       {:telemetry, "~> 1.0"},
       {:nx, "~> 0.9", optional: true},
-      {:ex_doc, "~> 0.35", only: :dev, runtime: false}
+      {:csv, "~> 3.2" },
+      {:ex_doc, "~> 0.35", only: :dev, runtime: false},
+      {:observer_cli, "~> 1.7"}
     ]
   end
 

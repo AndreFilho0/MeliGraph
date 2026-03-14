@@ -21,3 +21,6 @@ meli_graph-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+
+# Datasets exportados do banco de produção (não versionar dados reais)
+tmp/*.csv
