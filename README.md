@@ -9,6 +9,8 @@ Inspirado nos sistemas [WTF (Who to Follow)](https://stanford.edu/~rezab/papers/
 - **Grafo em memória** com segmentação temporal (GraphJet-style)
 - **PageRank Personalizado** via Monte Carlo random walks
 - **SALSA** para grafos bipartidos (hubs/authorities)
+- **SimilarItems** — co-ocorrência 2-hop com normalização Jaccard/Cosine
+- **GlobalRank** — ranking global por in-degree para cold start
 - **Single-writer / multi-reader** via GenServer + ETS
 - **Múltiplas instâncias** isoladas via Registry
 - **Telemetry-first** — todas as operações emitem eventos
@@ -74,6 +76,8 @@ MeliGraph.insert_edge(:interactions, "user:1", "post:a", :like)
 |-----------|--------------|-------------|
 | **PageRank** | Dirigido | "Who to Follow", Circle of Trust |
 | **SALSA** | Bipartido | "Posts para você", recomendação de conteúdo |
+| **SimilarItems** | Bipartido | "Professores similares a X", itens co-consumidos |
+| **GlobalRank** | Qualquer | Top itens para anônimos, cold start |
 
 Algoritmos customizados podem ser adicionados implementando o behaviour `MeliGraph.Algorithm`.
 
@@ -108,95 +112,16 @@ Eventos emitidos para observabilidade:
 
 ## Testes
 
-A suite de testes é dividida em dois grupos: **unitários** (rápidos, sem dependências externas) e **integração** (usam dados reais exportados do banco).
-
-### Testes unitários
-
-Rodam sem nenhuma configuração adicional. Todos os processos são síncronos via `testing: :sync`.
-
 ```bash
+# Testes unitários (sem dependências externas)
 mix test
 ```
 
 ```
-75 tests, 0 failures
+94 tests, 0 failures
 ```
 
-### Testes de integração com dados reais
-
-Os testes de integração carregam CSVs exportados do banco de produção e validam os algoritmos com dados reais.
-
-#### 1. Exportar os dados
-
-Execute no seu banco PostgreSQL:
-
-```sql
-\copy (
-  SELECT from_profile_id, to_profile_id, inserted_at
-  FROM follows
-  WHERE from_profile_id IS NOT NULL AND to_profile_id IS NOT NULL
-  ORDER BY inserted_at
-) TO 'tmp/meli_graph_follows.csv' WITH CSV HEADER
-
-\copy (
-  SELECT profile_id, post_id, inserted_at
-  FROM likes
-  WHERE profile_id IS NOT NULL AND post_id IS NOT NULL
-  ORDER BY inserted_at
-) TO 'tmp/meli_graph_likes.csv' WITH CSV HEADER
-
-\copy (
-  SELECT id AS post_id, profile_id, likes_count, reposts_count, category, type, inserted_at
-  FROM posts
-  WHERE removed = false AND profile_id IS NOT NULL
-  ORDER BY inserted_at
-) TO 'tmp/meli_graph_posts.csv' WITH CSV HEADER
-```
-
-Os arquivos devem ficar em `tmp/` na raiz do projeto:
-
-```
-tmp/
-├── meli_graph_follows.csv
-├── meli_graph_likes.csv
-└── meli_graph_posts.csv
-```
-
-#### 2. Rodar os testes de integração
-
-```bash
-# Só os testes de integração
-mix test test/integration/ --include integration
-
-# Tudo junto (unitários + integração)
-mix test --include integration
-```
-
-#### O que cada teste valida
-
-| Arquivo | O que testa |
-|---------|-------------|
-| `dataset_stats_test.exs` | Valida integridade dos CSVs e imprime estatísticas do dataset |
-| `follows_graph_test.exs` | Grafo social: "Who to Follow" via PageRank, seguidores, simetria de follows |
-| `likes_graph_test.exs` | Grafo bipartido: feed de posts via SALSA e PageRank, distribuição de likes |
-
-#### Saída esperada (exemplo com dataset real)
-
-```
-[Follows] Grafo carregado: 55 arestas, 37 vértices
-
-  Who to Follow para profile:166:
-    profile:5   score: 0.2254
-    profile:6   score: 0.1532
-    profile:61  score: 0.1127
-    ...
-
-[Likes] Grafo carregado: 33 arestas únicas (144 duplicatas removidas)
-
-  post:28 foi curtido por 4 perfil(s): [profile:5, profile:17, profile:27, profile:61]
-```
-
-> Os testes de integração são excluídos por padrão em `mix test` para não exigir os CSVs em ambientes de CI. Veja [docs/testing.md](docs/testing.md) para mais detalhes.
+Veja [docs/testing.md](docs/testing.md) para testes de integração com dados reais.
 
 ## Documentação Técnica
 
@@ -229,7 +154,9 @@ lib/
 │   ├── algorithm/
 │   │   ├── algorithm.ex             # Behaviour genérico
 │   │   ├── pagerank.ex              # Monte Carlo random walks
-│   │   └── salsa.ex                 # Subgraph SALSA
+│   │   ├── salsa.ex                 # Subgraph SALSA
+│   │   ├── similar_items.ex         # Co-ocorrência 2-hop (Jaccard/Cosine)
+│   │   └── global_rank.ex           # Ranking global por in-degree
 │   ├── query/
 │   │   └── query.ex                 # Cache-first, respeita testing mode
 │   ├── store/
@@ -255,14 +182,18 @@ test/
 ├── integration/                     # Testes com dados reais (tag :integration)
 │   ├── dataset_stats_test.exs       # Valida integridade dos CSVs
 │   ├── follows_graph_test.exs       # Who to Follow com dados reais
-│   └── likes_graph_test.exs        # Feed de recomendações com dados reais
+│   ├── likes_graph_test.exs         # Feed de recomendações com dados reais
+│   └── professors_graph_test.exs    # Recomendação de professores (SALSA, SimilarItems, GlobalRank)
 └── support/
     ├── graph_helpers.ex             # Helpers para testes unitários
     └── dataset_loader.ex            # Carrega CSVs de produção
 tmp/
-├── meli_graph_follows.csv           # Exportado do banco (não versionado)
+├── meli_graph_follows.csv              # Exportado do banco (não versionado)
 ├── meli_graph_likes.csv
-└── meli_graph_posts.csv
+├── meli_graph_posts.csv
+├── meli_graph_professors.csv           # Metadados dos professores
+├── meli_graph_professor_ratings.csv    # Avaliações profile → professor
+└── meli_graph_professor_posts.csv      # Posts sobre professores
 ```
 
 ## Roadmap
@@ -274,15 +205,17 @@ tmp/
 - [x] Single-writer ingestion + graceful shutdown
 - [x] PageRank Personalizado (Monte Carlo)
 - [x] SALSA (Subgraph)
+- [x] SimilarItems (co-ocorrência 2-hop com Jaccard/Cosine)
+- [x] GlobalRank (ranking global por in-degree)
 - [x] Store ETS com TTL
-- [x] Query layer (sync + cache)
+- [x] Query layer (sync + cache) com suporte a algoritmos globais
 - [x] Plugin system (Pruner + CacheCleaner)
 - [x] Telemetry spans
 - [x] Modo de testing `:sync`
-- [x] 75 testes unitários + 20 testes de integração com dados reais
+- [x] 94 testes unitários + 37 testes de integração com dados reais
 
 ### v0.2 (planejado)
-- [ ] Similarity queries (cosine via sampling)
+- [ ] Pesos nas arestas (`:avaliou` pesar mais que `:postou`)
 - [ ] PageRank via Nx power method
 - [ ] Sonar (health check do Writer)
 - [ ] Precomputer plugin
