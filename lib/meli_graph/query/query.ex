@@ -52,18 +52,32 @@ defmodule MeliGraph.Query do
   defp compute_inline(conf, external_id, type, opts) do
     algorithm = resolve_algorithm(Keyword.get(opts, :algorithm, :pagerank))
 
-    if global_algorithm?(algorithm) do
-      algorithm.compute(conf, 0, type, opts)
-    else
-      case IdMap.get_internal(conf, external_id) do
-        nil ->
-          {:ok, []}
+    result =
+      if global_algorithm?(algorithm) do
+        algorithm.compute(conf, 0, type, opts)
+      else
+        case IdMap.get_internal(conf, external_id) do
+          nil ->
+            {:ok, []}
 
-        internal_id ->
-          algorithm.compute(conf, internal_id, type, opts)
+          internal_id ->
+            algorithm.compute(conf, internal_id, type, opts)
+        end
       end
-    end
+
+    maybe_fallback(result, conf, external_id, type, opts)
   end
+
+  # Fallback transparente para SALSA quando o LightGCN ainda não tem
+  # embeddings carregados (ex: app subiu sem pré-treino, ou o BootLoader
+  # não encontrou um payload no banco). SALSA não retorna esse erro, então
+  # a recursão termina em uma única troca de algoritmo.
+  defp maybe_fallback({:error, :embeddings_not_ready}, conf, external_id, type, opts) do
+    fallback_opts = Keyword.put(opts, :algorithm, :salsa)
+    compute_inline(conf, external_id, type, fallback_opts)
+  end
+
+  defp maybe_fallback(result, _conf, _external_id, _type, _opts), do: result
 
   defp global_algorithm?(MeliGraph.Algorithm.GlobalRank), do: true
   defp global_algorithm?(_), do: false
@@ -72,6 +86,7 @@ defmodule MeliGraph.Query do
   defp resolve_algorithm(:salsa), do: MeliGraph.Algorithm.SALSA
   defp resolve_algorithm(:similar_items), do: MeliGraph.Algorithm.SimilarItems
   defp resolve_algorithm(:global_rank), do: MeliGraph.Algorithm.GlobalRank
+  defp resolve_algorithm(:lightgcn), do: MeliGraph.Algorithm.LightGCN
 
   defp resolve_algorithm(module) when is_atom(module) do
     if Code.ensure_loaded?(module) and function_exported?(module, :compute, 4) do

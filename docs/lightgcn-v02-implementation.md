@@ -746,24 +746,25 @@ A lib continua funcional sem EXLA (usa o backend padrão Nx.BinaryBackend), mas 
 ### LightGCN — Módulos novos
 - [x] `MeliGraph.LightGCN.Matrix.build/2` — constrói Ã a partir do SegmentManager
 - [x] `MeliGraph.LightGCN.Trainer.train/3` — loop BPR + Adam via Nx.Defn
-- [ ] `MeliGraph.LightGCN.EmbeddingStore.load/2` — deserializa + ETS
-- [ ] `MeliGraph.LightGCN.EmbeddingStore.get/1` — recupera embeddings
-- [ ] `MeliGraph.LightGCN.EmbeddingStore.ready?/1` — health check
-- [ ] `MeliGraph.Algorithm.LightGCN.compute/4` — inferência via dot product
+- [x] `MeliGraph.LightGCN.EmbeddingStore.load/2` — deserializa + ETS
+- [x] `MeliGraph.LightGCN.EmbeddingStore.get/1` — recupera embeddings
+- [x] `MeliGraph.LightGCN.EmbeddingStore.ready?/1` — health check
+- [x] `MeliGraph.Algorithm.LightGCN.compute/4` — inferência via dot product
 
 ### Integração
-- [ ] `Query.resolve_algorithm(:lightgcn)` adicionado
-- [ ] Fallback para SALSA quando `:embeddings_not_ready`
-- [ ] `MeliGraph.train_embeddings/2` na API pública
-- [ ] `MeliGraph.load_embeddings/2` na API pública
-- [ ] `MeliGraph.embeddings_ready?/1` na API pública
+- [x] `Query.resolve_algorithm(:lightgcn)` adicionado
+- [x] Fallback para SALSA quando `:embeddings_not_ready`
+- [x] `MeliGraph.train_embeddings/2` na API pública
+- [x] `MeliGraph.load_embeddings/2` na API pública
+- [x] `MeliGraph.embeddings_ready?/1` na API pública
 
 ### Testes
 - [x] `store/ets_test.exs` — casos TTL `:infinity`
 - [x] `lightgcn/matrix_test.exs` — shape, simetria, normalização
 - [x] `lightgcn/trainer_test.exs` — loss diminui, roundtrip serialização
-- [ ] `lightgcn/embedding_store_test.exs` — load/get/ready
-- [ ] `algorithm/lightgcn_test.exs` — inferência, fallback, usuário não visto
+- [x] `lightgcn/embedding_store_test.exs` — load/get/ready
+- [x] `algorithm/lightgcn_test.exs` — inferência, fallback, usuário não visto
+- [x] `query/lightgcn_integration_test.exs` — fallback automático, API pública
 - [ ] `integration/professors_graph_test.exs` — treinar + recomendar com dataset real
 
 ---

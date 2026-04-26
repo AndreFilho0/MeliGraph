@@ -27,6 +27,7 @@ defmodule MeliGraph do
   """
 
   alias MeliGraph.Ingestion.Writer
+  alias MeliGraph.LightGCN.{EmbeddingStore, Trainer}
   alias MeliGraph.Query
   alias MeliGraph.Graph.{IdMap, SegmentManager}
 
@@ -142,6 +143,54 @@ defmodule MeliGraph do
   def vertex_count(name) do
     conf = get_conf(name)
     IdMap.size(conf)
+  end
+
+  @doc """
+  Treina embeddings LightGCN com base no estado atual do grafo.
+
+  Retorna um binário serializado com os embeddings treinados. A lib
+  **não persiste nada** — o binário deve ser salvo pelo caller (Postgres,
+  R2, S3...) e recarregado depois via `load_embeddings/2`.
+
+  ## Opções
+
+    * `:user_prefix` - prefixo dos vértices do lado "usuário" (obrigatório)
+    * `:embedding_dim` - dimensão dos embeddings (padrão: 64)
+    * `:layers` - número de camadas LGC (padrão: 3)
+    * `:epochs` - épocas de treinamento (padrão: 1000)
+    * `:batch_size` - tamanho do mini-batch BPR (padrão: 1024)
+    * `:learning_rate` - taxa de aprendizado Adam (padrão: 0.001)
+    * `:lambda` - regularização L2 (padrão: 1.0e-4)
+  """
+  @spec train_embeddings(atom(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def train_embeddings(name, opts \\ []) do
+    conf = get_conf(name)
+    user_prefix = Keyword.fetch!(opts, :user_prefix)
+    Trainer.train(conf, user_prefix, opts)
+  end
+
+  @doc """
+  Carrega embeddings pré-treinados na instância (em ETS com TTL `:infinity`).
+
+  Substitui qualquer embedding anterior. Retorna `{:error, :invalid_binary}`
+  se o binário não for um payload válido produzido por `train_embeddings/2`.
+  """
+  @spec load_embeddings(atom(), binary()) :: :ok | {:error, :invalid_binary}
+  def load_embeddings(name, binary) do
+    conf = get_conf(name)
+    EmbeddingStore.load(conf, binary)
+  end
+
+  @doc """
+  Retorna `true` se há embeddings LightGCN carregados na instância.
+
+  Quando `false`, chamadas a `recommend/4` com `algorithm: :lightgcn`
+  fazem fallback transparente para SALSA.
+  """
+  @spec embeddings_ready?(atom()) :: boolean()
+  def embeddings_ready?(name) do
+    conf = get_conf(name)
+    EmbeddingStore.ready?(conf)
   end
 
   # --- Private ---

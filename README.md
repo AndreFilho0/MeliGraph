@@ -11,6 +11,7 @@ Inspirado nos sistemas [WTF (Who to Follow)](https://stanford.edu/~rezab/papers/
 - **SALSA** para grafos bipartidos (hubs/authorities)
 - **SimilarItems** — co-ocorrência 2-hop com normalização Jaccard/Cosine
 - **GlobalRank** — ranking global por in-degree para cold start
+- **LightGCN** — embeddings aprendidos via Nx.Defn + BPR loss (v0.2) com fallback automático para SALSA
 - **Single-writer / multi-reader** via GenServer + ETS
 - **Múltiplas instâncias** isoladas via Registry
 - **Telemetry-first** — todas as operações emitem eventos
@@ -22,10 +23,25 @@ Inspirado nos sistemas [WTF (Who to Follow)](https://stanford.edu/~rezab/papers/
 ```elixir
 def deps do
   [
-    {:meli_graph, "~> 0.1.0"}
+    {:meli_graph, "~> 0.2.0"},
+    # Opcionais — só necessárias se for usar o LightGCN:
+    {:nx, "~> 0.9"},
+    {:exla, "~> 0.9"}    # backend XLA (CPU/GPU) para o trainer
   ]
 end
 ```
+
+E configure o EXLA como compilador padrão de `Nx.Defn`:
+
+```elixir
+# config/config.exs (ou config/runtime.exs no app caller)
+config :nx, default_backend: EXLA.Backend
+config :nx, :default_defn_options, compiler: EXLA
+```
+
+Sem EXLA o LightGCN ainda compila e roda (via `Nx.BinaryBackend`), mas é
+ordens de magnitude mais lento — em produção, EXLA é obrigatório para
+treinos noturnos caberem em janela de horas.
 
 ## Quick Start
 
@@ -78,8 +94,44 @@ MeliGraph.insert_edge(:interactions, "user:1", "post:a", :like)
 | **SALSA** | Bipartido | "Posts para você", recomendação de conteúdo |
 | **SimilarItems** | Bipartido | "Professores similares a X", itens co-consumidos |
 | **GlobalRank** | Qualquer | Top itens para anônimos, cold start |
+| **LightGCN** | Bipartido | Recomendação personalizada via embeddings aprendidos |
 
 Algoritmos customizados podem ser adicionados implementando o behaviour `MeliGraph.Algorithm`.
+
+## LightGCN (v0.2)
+
+Modelo de embedding colaborativo (paper *He et al., SIGIR 2020*) treinado
+via `Nx.Defn` + BPR loss. A lib **não persiste embeddings** — produz e
+consome `binary`; o app caller decide onde guardar (Postgres, R2, S3...).
+
+```elixir
+# 1. Treinar — lê o grafo atual e devolve um binary serializado
+{:ok, binary} = MeliGraph.train_embeddings(:professor_graph,
+  user_prefix: "profile:",
+  embedding_dim: 64,
+  layers: 3,
+  epochs: 1000
+)
+
+# 2. App persiste o binary onde quiser (Postgres bytea, R2, etc.)
+Repo.insert(%GraphEmbedding{graph_name: "professor_graph", data: binary})
+
+# 3. Carregar embeddings na instância (ETS com TTL :infinity)
+:ok = MeliGraph.load_embeddings(:professor_graph, binary)
+
+# 4. Recomendar — top-K via dot product
+{:ok, recs} = MeliGraph.recommend(:professor_graph, "profile:42", :content,
+  algorithm: :lightgcn, top_k: 16)
+
+# 5. Health check — fallback automático para SALSA quando false
+MeliGraph.embeddings_ready?(:professor_graph)
+# => true
+```
+
+Quando os embeddings ainda não foram carregados, `algorithm: :lightgcn`
+faz **fallback transparente para SALSA** — o caller não precisa tratar
+esse caso. Veja [docs/lightgcn.md](docs/lightgcn.md) para arquitetura,
+fluxo de treino, hiperparâmetros e validação empírica.
 
 ## Configuração
 
@@ -118,7 +170,7 @@ mix test
 ```
 
 ```
-94 tests, 0 failures
+181 tests, 0 failures, 37 excluded (integration)
 ```
 
 Veja [docs/testing.md](docs/testing.md) para testes de integração com dados reais.
@@ -129,6 +181,8 @@ Veja [docs/testing.md](docs/testing.md) para testes de integração com dados re
 - [Graph Storage](docs/graph-storage.md) — Segmentação temporal, ETS e ID mapping
 - [Estruturas de Dados](docs/data-structures.md) — Cada estrutura usada, justificativa e trade-offs
 - [Algoritmos](docs/algorithms.md) — PageRank, SALSA, extensibilidade
+- [LightGCN (v0.2)](docs/lightgcn.md) — Arquitetura, fluxo de treino, dependências e validação empírica
+- [Plano LightGCN v0.2](docs/lightgcn-v02-implementation.md) — Plano de implementação fase a fase
 - [Padrões OTP](docs/otp-patterns.md) — Config struct, Registry, plugins, telemetry
 - [Testing](docs/testing.md) — Modo `:sync`, helpers, exemplos de testes
 - [API Reference](docs/api-reference.md) — Referência completa da API pública
@@ -156,12 +210,17 @@ lib/
 │   │   ├── pagerank.ex              # Monte Carlo random walks
 │   │   ├── salsa.ex                 # Subgraph SALSA
 │   │   ├── similar_items.ex         # Co-ocorrência 2-hop (Jaccard/Cosine)
-│   │   └── global_rank.ex           # Ranking global por in-degree
+│   │   ├── global_rank.ex           # Ranking global por in-degree
+│   │   └── lightgcn.ex              # Inferência via dot product (v0.2)
+│   ├── lightgcn/                    # v0.2 — embeddings aprendidos
+│   │   ├── matrix.ex                # Ã = D^(-1/2)·A·D^(-1/2) via Nx
+│   │   ├── trainer.ex               # BPR loss + Adam em defn
+│   │   └── embedding_store.ex       # Ciclo de vida do payload no ETS
 │   ├── query/
-│   │   └── query.ex                 # Cache-first, respeita testing mode
+│   │   └── query.ex                 # Cache-first + fallback :lightgcn → :salsa
 │   ├── store/
 │   │   ├── store.ex                 # Store behaviour
-│   │   └── ets.ex                   # ETS + TTL
+│   │   └── ets.ex                   # ETS + TTL (numérico ou :infinity)
 │   └── plugins/
 │       ├── plugin.ex                # Plugin behaviour
 │       ├── pruner.ex                # Remove segmentos expirados
@@ -198,7 +257,7 @@ tmp/
 
 ## Roadmap
 
-### v0.1 (atual)
+### v0.1
 - [x] Config struct + Registry + Supervisor
 - [x] Graph storage com ETS + segmentação temporal
 - [x] ID mapping global
@@ -212,18 +271,29 @@ tmp/
 - [x] Plugin system (Pruner + CacheCleaner)
 - [x] Telemetry spans
 - [x] Modo de testing `:sync`
-- [x] 94 testes unitários + 37 testes de integração com dados reais
 
-### v0.2 (planejado)
+### v0.2 (atual) — LightGCN
+- [x] `Store.ETS` com TTL `:infinity` (embeddings nunca expiram por tempo)
+- [x] `LightGCN.Matrix` — `Ã = D^(-1/2)·A·D^(-1/2)` via Nx
+- [x] `LightGCN.Trainer` — BPR loss + Adam manual em `defn`, autodiff via `value_and_grad`
+- [x] `LightGCN.EmbeddingStore` — ciclo de vida no ETS, payload validado
+- [x] `Algorithm.LightGCN` — inferência via dot product
+- [x] `Query` — fallback transparente para SALSA quando embeddings não estão prontos
+- [x] API pública: `train_embeddings/2`, `load_embeddings/2`, `embeddings_ready?/1`
+- [x] EXLA opcional para JIT do trainer (treino Gowalla 500u/100ep em ~99s)
+- [x] Validação empírica no dataset Gowalla do paper (recall@20 18.6× acima de random)
+- [x] 181 testes unitários (94 → 181, +87 desde v0.1)
+
+### v0.3 (planejado)
 - [ ] Pesos nas arestas (`:avaliou` pesar mais que `:postou`)
+- [ ] Matriz sparse no LightGCN (escalar para grafos > 50k nós)
+- [ ] Retreinamento incremental (warm start)
 - [ ] PageRank via Nx power method
-- [ ] Sonar (health check do Writer)
+- [ ] Sonar (health check do Writer) + Backpressure
 - [ ] Precomputer plugin
-- [ ] Backpressure no Writer
 
-### v0.3 (futuro)
+### v0.4 (futuro)
 - [ ] Peer behaviour + distribuição
-- [ ] Pesos nas arestas
 - [ ] Algoritmos adicionais (Node2Vec)
 
 ## Referências
