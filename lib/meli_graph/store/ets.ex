@@ -2,8 +2,15 @@ defmodule MeliGraph.Store.ETS do
   @moduledoc """
   Implementação do Store behaviour usando ETS com TTL.
 
-  Cada entrada é armazenada como `{key, value, expires_at}`.
-  Entradas expiradas são ignoradas na leitura e removidas pelo CacheCleaner.
+  Cada entrada é armazenada como `{key, value, expires_at}`, onde
+  `expires_at` pode ser:
+
+    * um inteiro (monotonic ms) — a entrada expira nesse instante
+    * `:infinity` — a entrada nunca expira (usada por embeddings LightGCN)
+
+  Entradas com TTL numérico expirado são ignoradas na leitura e removidas
+  pelo `CacheCleaner`. Entradas `:infinity` só saem do store via `delete/2`,
+  `clear/1` ou substituição com `put/4`.
   """
 
   use GenServer
@@ -25,6 +32,9 @@ defmodule MeliGraph.Store.ETS do
     now = System.monotonic_time(:millisecond)
 
     case :ets.lookup(table, key) do
+      [{^key, value, :infinity}] ->
+        {:ok, value}
+
       [{^key, value, expires_at}] when expires_at > now ->
         {:ok, value}
 
@@ -38,7 +48,13 @@ defmodule MeliGraph.Store.ETS do
   end
 
   @impl MeliGraph.Store
-  def put(conf, key, value, ttl) do
+  def put(conf, key, value, :infinity) do
+    table = table_name(conf)
+    :ets.insert(table, {key, value, :infinity})
+    :ok
+  end
+
+  def put(conf, key, value, ttl) when is_integer(ttl) do
     table = table_name(conf)
     expires_at = System.monotonic_time(:millisecond) + ttl
     :ets.insert(table, {key, value, expires_at})
@@ -59,14 +75,19 @@ defmodule MeliGraph.Store.ETS do
 
   @doc """
   Remove todas as entradas expiradas. Chamado pelo plugin CacheCleaner.
+
+  Entradas com TTL `:infinity` são preservadas — o guard `is_integer/1`
+  no match spec garante que apenas timestamps numéricos sejam comparados.
   """
   @spec clean_expired(Config.t()) :: non_neg_integer()
   def clean_expired(conf) do
     table = table_name(conf)
     now = System.monotonic_time(:millisecond)
 
-    # Match spec: select keys where expires_at <= now
-    match_spec = [{{:"$1", :_, :"$2"}, [{:"=<", :"$2", now}], [:"$1"]}]
+    match_spec = [
+      {{:"$1", :_, :"$2"}, [{:is_integer, :"$2"}, {:"=<", :"$2", now}], [:"$1"]}
+    ]
+
     expired_keys = :ets.select(table, match_spec)
 
     Enum.each(expired_keys, &:ets.delete(table, &1))

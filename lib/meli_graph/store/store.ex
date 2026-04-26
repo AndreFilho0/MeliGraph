@@ -9,8 +9,12 @@ defmodule MeliGraph.Store do
   @callback get(conf :: MeliGraph.Config.t(), key :: term()) ::
               {:ok, term()} | :miss
 
-  @callback put(conf :: MeliGraph.Config.t(), key :: term(), value :: term(), ttl :: pos_integer()) ::
-              :ok
+  @callback put(
+              conf :: MeliGraph.Config.t(),
+              key :: term(),
+              value :: term(),
+              ttl :: pos_integer() | :infinity
+            ) :: :ok
 
   @callback delete(conf :: MeliGraph.Config.t(), key :: term()) :: :ok
 

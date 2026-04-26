@@ -66,6 +66,59 @@ defmodule MeliGraph.Store.ETSTest do
     end
   end
 
+  describe "put/4 with :infinity TTL" do
+    test "stores entries that never expire", %{conf: conf} do
+      :ok = Store.put(conf, :forever, "permanent", :infinity)
+      Process.sleep(5)
+      assert {:ok, "permanent"} = Store.get(conf, :forever)
+    end
+
+    test "infinity entries survive clean_expired", %{conf: conf} do
+      Store.put(conf, :forever, "permanent", :infinity)
+      Store.put(conf, :stale, "remove", 1)
+      Process.sleep(5)
+
+      cleaned = Store.clean_expired(conf)
+      assert cleaned == 1
+      assert {:ok, "permanent"} = Store.get(conf, :forever)
+      assert :miss = Store.get(conf, :stale)
+    end
+
+    test "infinity entry can be overwritten with another infinity entry", %{conf: conf} do
+      Store.put(conf, :key, "v1", :infinity)
+      Store.put(conf, :key, "v2", :infinity)
+      assert {:ok, "v2"} = Store.get(conf, :key)
+    end
+
+    test "infinity entry can be replaced by a TTL entry", %{conf: conf} do
+      Store.put(conf, :key, "v1", :infinity)
+      Store.put(conf, :key, "v2", 1)
+      Process.sleep(5)
+      assert :miss = Store.get(conf, :key)
+    end
+
+    test "TTL entry can be replaced by an infinity entry", %{conf: conf} do
+      Store.put(conf, :key, "v1", 1)
+      Store.put(conf, :key, "v2", :infinity)
+      Process.sleep(5)
+      assert {:ok, "v2"} = Store.get(conf, :key)
+    end
+
+    test "infinity entry can be deleted", %{conf: conf} do
+      Store.put(conf, :forever, "permanent", :infinity)
+      :ok = Store.delete(conf, :forever)
+      assert :miss = Store.get(conf, :forever)
+    end
+
+    test "clear/1 removes infinity entries too", %{conf: conf} do
+      Store.put(conf, :forever, "permanent", :infinity)
+      Store.put(conf, :ttl, "ttl", 60_000)
+      :ok = Store.clear(conf)
+      assert :miss = Store.get(conf, :forever)
+      assert :miss = Store.get(conf, :ttl)
+    end
+  end
+
   defp get_conf(name) do
     registry = Module.concat(name, Registry)
     [{_pid, conf}] = Registry.lookup(registry, :conf)
