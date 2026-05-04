@@ -66,7 +66,7 @@ defmodule MeliGraph.Algorithm.PageRank do
           walk(conf, seed, seed, steps_left - 1, reset_prob, visits)
 
         neighbors ->
-          {next, _type} = Enum.random(neighbors)
+          {next, _type, _weight} = Enum.random(neighbors)
           walk(conf, seed, next, steps_left - 1, reset_prob, visits)
       end
     end

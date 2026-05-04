@@ -50,7 +50,7 @@ defmodule MeliGraph.Algorithm.SimilarItems do
     # 1. Usuários que interagiram com o item semente (neighbors_in)
     seed_users =
       SegmentManager.neighbors_in(conf, entity_id)
-      |> Enum.map(fn {user_id, _type} -> user_id end)
+      |> Enum.map(fn {user_id, _type, _weight} -> user_id end)
       |> Enum.uniq()
 
     if seed_users == [] do
@@ -65,7 +65,7 @@ defmodule MeliGraph.Algorithm.SimilarItems do
         Enum.reduce(seed_users, {%{}, %{}}, fn user_id, {co_occ, degrees} ->
           items =
             SegmentManager.neighbors_out(conf, user_id)
-            |> Enum.map(fn {item_id, _type} -> item_id end)
+            |> Enum.map(fn {item_id, _type, _weight} -> item_id end)
             |> Enum.uniq()
 
           Enum.reduce(items, {co_occ, degrees}, fn item_id, {co_acc, deg_acc} ->

@@ -76,7 +76,7 @@ defmodule MeliGraph.Algorithm.SALSA do
   defp build_bipartite(conf, seed_set) do
     Enum.reduce(seed_set, {%{}, MapSet.new()}, fn hub_id, {edges, authorities} ->
       neighbors = SegmentManager.neighbors_out(conf, hub_id)
-      targets = Enum.map(neighbors, fn {target, _type} -> target end)
+      targets = Enum.map(neighbors, fn {target, _type, _weight} -> target end)
 
       if targets == [] do
         {edges, authorities}

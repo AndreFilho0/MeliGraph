@@ -27,18 +27,26 @@ defmodule MeliGraph.Ingestion.Writer do
   end
 
   @doc """
-  Insere uma aresta no grafo.
+  Insere uma aresta no grafo, com peso opcional (default `1.0`).
 
   No modo `:sync`, a chamada é síncrona (call).
   No modo `:disabled`, a chamada é assíncrona (cast).
   """
-  @spec insert_edge(Config.t(), term(), term(), atom()) :: :ok
-  def insert_edge(%Config{testing: :sync} = conf, source, target, edge_type) do
-    GenServer.call(MeliGraph.Registry.via(conf, :writer), {:insert_edge, source, target, edge_type})
+  @spec insert_edge(Config.t(), term(), term(), atom(), float()) :: :ok
+  def insert_edge(conf, source, target, edge_type, weight \\ 1.0)
+
+  def insert_edge(%Config{testing: :sync} = conf, source, target, edge_type, weight) do
+    GenServer.call(
+      MeliGraph.Registry.via(conf, :writer),
+      {:insert_edge, source, target, edge_type, weight}
+    )
   end
 
-  def insert_edge(conf, source, target, edge_type) do
-    GenServer.cast(MeliGraph.Registry.via(conf, :writer), {:insert_edge, source, target, edge_type})
+  def insert_edge(conf, source, target, edge_type, weight) do
+    GenServer.cast(
+      MeliGraph.Registry.via(conf, :writer),
+      {:insert_edge, source, target, edge_type, weight}
+    )
   end
 
   # --- Server callbacks ---
@@ -50,14 +58,14 @@ defmodule MeliGraph.Ingestion.Writer do
   end
 
   @impl true
-  def handle_call({:insert_edge, source, target, edge_type}, _from, state) do
-    result = do_insert(state.conf, source, target, edge_type)
+  def handle_call({:insert_edge, source, target, edge_type, weight}, _from, state) do
+    result = do_insert(state.conf, source, target, edge_type, weight)
     {:reply, result, state}
   end
 
   @impl true
-  def handle_cast({:insert_edge, source, target, edge_type}, state) do
-    do_insert(state.conf, source, target, edge_type)
+  def handle_cast({:insert_edge, source, target, edge_type, weight}, state) do
+    do_insert(state.conf, source, target, edge_type, weight)
     {:noreply, state}
   end
 
@@ -69,19 +77,19 @@ defmodule MeliGraph.Ingestion.Writer do
 
   # --- Private ---
 
-  defp do_insert(conf, source, target, edge_type) do
+  defp do_insert(conf, source, target, edge_type, weight) do
     Telemetry.span([:ingestion, :insert_edge], %{conf: conf}, fn ->
       source_id = IdMap.get_or_create(conf, source)
       target_id = IdMap.get_or_create(conf, target)
-      result = SegmentManager.insert(conf, source_id, target_id, edge_type)
-      {result, %{source: source, target: target, edge_type: edge_type}}
+      result = SegmentManager.insert(conf, source_id, target_id, edge_type, weight)
+      {result, %{source: source, target: target, edge_type: edge_type, weight: weight}}
     end)
   end
 
   defp drain_mailbox(conf) do
     receive do
-      {:"$gen_cast", {:insert_edge, source, target, edge_type}} ->
-        do_insert(conf, source, target, edge_type)
+      {:"$gen_cast", {:insert_edge, source, target, edge_type, weight}} ->
+        do_insert(conf, source, target, edge_type, weight)
         drain_mailbox(conf)
     after
       0 -> :ok

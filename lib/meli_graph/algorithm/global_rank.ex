@@ -53,7 +53,7 @@ defmodule MeliGraph.Algorithm.GlobalRank do
       |> Enum.map(fn {internal_id, external_id} ->
         in_degree =
           SegmentManager.neighbors_in(conf, internal_id)
-          |> Enum.map(fn {id, _type} -> id end)
+          |> Enum.map(fn {id, _type, _weight} -> id end)
           |> Enum.uniq()
           |> length()
 

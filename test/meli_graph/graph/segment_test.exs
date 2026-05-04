@@ -41,8 +41,8 @@ defmodule MeliGraph.Graph.SegmentTest do
 
       neighbors = Segment.neighbors_out(segment, 0)
       assert length(neighbors) == 2
-      assert {1, :follow} in neighbors
-      assert {2, :like} in neighbors
+      assert {1, :follow, 1.0} in neighbors
+      assert {2, :like, 1.0} in neighbors
     end
 
     test "returns empty for vertex with no outgoing edges", %{segment: segment} do
@@ -57,8 +57,8 @@ defmodule MeliGraph.Graph.SegmentTest do
 
       neighbors = Segment.neighbors_in(segment, 2)
       assert length(neighbors) == 2
-      assert {0, :follow} in neighbors
-      assert {1, :follow} in neighbors
+      assert {0, :follow, 1.0} in neighbors
+      assert {1, :follow, 1.0} in neighbors
     end
   end
 

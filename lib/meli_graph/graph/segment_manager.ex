@@ -33,9 +33,12 @@ defmodule MeliGraph.Graph.SegmentManager do
   Insere uma aresta no segmento ativo. Se o segmento está cheio,
   rotaciona automaticamente e insere no novo segmento.
   """
-  @spec insert(Config.t(), non_neg_integer(), non_neg_integer(), atom()) :: :ok
-  def insert(conf, source, target, edge_type) do
-    GenServer.call(MeliGraph.Registry.via(conf, :segment_manager), {:insert, source, target, edge_type})
+  @spec insert(Config.t(), non_neg_integer(), non_neg_integer(), atom(), float()) :: :ok
+  def insert(conf, source, target, edge_type, weight \\ 1.0) do
+    GenServer.call(
+      MeliGraph.Registry.via(conf, :segment_manager),
+      {:insert, source, target, edge_type, weight}
+    )
   end
 
   @doc """
@@ -119,15 +122,15 @@ defmodule MeliGraph.Graph.SegmentManager do
   end
 
   @impl true
-  def handle_call({:insert, source, target, edge_type}, _from, state) do
-    case Segment.insert(state.active, source, target, edge_type) do
+  def handle_call({:insert, source, target, edge_type, weight}, _from, state) do
+    case Segment.insert(state.active, source, target, edge_type, weight) do
       {:ok, updated_segment} ->
         {:reply, :ok, %{state | active: updated_segment}}
 
       :full ->
         new_state = rotate_segment(state)
 
-        case Segment.insert(new_state.active, source, target, edge_type) do
+        case Segment.insert(new_state.active, source, target, edge_type, weight) do
           {:ok, updated_segment} ->
             {:reply, :ok, %{new_state | active: updated_segment}}
         end

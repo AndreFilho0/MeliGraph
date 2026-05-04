@@ -1,7 +1,7 @@
 defmodule MeliGraph.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.1"
   @source_url "https://github.com/AndreFilho0/MeliGraph"
 
   def project do
@@ -52,7 +52,7 @@ defmodule MeliGraph.MixProject do
   defp deps do
     [
       {:telemetry, "~> 1.0"},
-      {:nx, "~> 0.9", optional: true},
+      {:nx, "~> 0.9"},
       {:exla, "~> 0.9", optional: true},
       {:csv, "~> 3.2", only: :test, runtime: false},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},

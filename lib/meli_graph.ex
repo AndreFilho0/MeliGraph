@@ -58,15 +58,20 @@ defmodule MeliGraph do
   end
 
   @doc """
-  Insere uma aresta no grafo.
+  Insere uma aresta no grafo, com peso opcional (default `1.0`).
 
   No modo `:sync`, a inserção é síncrona.
   No modo `:disabled`, a inserção é assíncrona (fire-and-forget).
+
+  O peso é usado pelo LightGCN como entrada na matriz de adjacência
+  ponderada `Ã = D^(-1/2) · W · D^(-1/2)`. Quando múltiplas arestas
+  user↔item existem (ex.: like + comentário), os pesos são somados.
+  Os demais algoritmos (PageRank, SALSA, etc.) ignoram o peso na v0.2.
   """
-  @spec insert_edge(atom(), term(), term(), atom()) :: :ok
-  def insert_edge(name, source, target, edge_type) do
+  @spec insert_edge(atom(), term(), term(), atom(), float()) :: :ok
+  def insert_edge(name, source, target, edge_type, weight \\ 1.0) do
     conf = get_conf(name)
-    Writer.insert_edge(conf, source, target, edge_type)
+    Writer.insert_edge(conf, source, target, edge_type, weight)
   end
 
   @doc """
@@ -108,11 +113,11 @@ defmodule MeliGraph do
           case {direction, edge_type} do
             {:outgoing, nil} ->
               SegmentManager.neighbors_out(conf, internal_id)
-              |> Enum.map(fn {id, _type} -> id end)
+              |> Enum.map(fn {id, _type, _weight} -> id end)
 
             {:incoming, nil} ->
               SegmentManager.neighbors_in(conf, internal_id)
-              |> Enum.map(fn {id, _type} -> id end)
+              |> Enum.map(fn {id, _type, _weight} -> id end)
 
             {:outgoing, type} ->
               SegmentManager.neighbors_out(conf, internal_id, type)

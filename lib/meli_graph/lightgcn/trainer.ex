@@ -66,9 +66,34 @@ defmodule MeliGraph.LightGCN.Trainer do
   @spec train(Config.t(), String.t(), keyword()) ::
           {:ok, binary()} | {:error, term()}
   def train(%Config{} = conf, user_prefix, opts \\ []) when is_binary(user_prefix) do
+    warn_if_no_exla()
+
     case Matrix.build(conf, user_prefix) do
       {:ok, matrix_data} -> do_train(matrix_data, opts)
       {:error, _} = err -> err
+    end
+  end
+
+  # EXLA é opcional, mas sem ele o trainer cai em Nx.BinaryBackend e fica
+  # ordens de magnitude mais lento — inviável fora de testes/dev. Avisa
+  # uma única vez por VM via :persistent_term.
+  defp warn_if_no_exla do
+    unless :persistent_term.get({__MODULE__, :exla_warned}, false) do
+      compiler = Nx.Defn.default_options()[:compiler]
+
+      if compiler != EXLA do
+        Logger.warning("""
+        [LightGCN.Trainer] EXLA não está configurado como compilador padrão de Nx.Defn.
+        O treino vai rodar via Nx.BinaryBackend e ficará ordens de magnitude mais lento.
+        Em produção, configure:
+
+            config :nx, :default_defn_options, compiler: EXLA
+
+        e adicione `{:exla, "~> 0.9"}` às deps.
+        """)
+      end
+
+      :persistent_term.put({__MODULE__, :exla_warned}, true)
     end
   end
 

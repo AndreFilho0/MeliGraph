@@ -37,7 +37,7 @@ defmodule MeliGraph.Ingestion.WriterTest do
 
       source_id = IdMap.get_internal(conf, "u1")
       neighbors = SegmentManager.neighbors_out(conf, source_id)
-      types = Enum.map(neighbors, fn {_id, type} -> type end) |> Enum.sort()
+      types = Enum.map(neighbors, fn {_id, type, _weight} -> type end) |> Enum.sort()
 
       assert types == [:follow, :like, :view]
     end

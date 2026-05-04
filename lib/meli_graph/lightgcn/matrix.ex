@@ -1,15 +1,18 @@
 defmodule MeliGraph.LightGCN.Matrix do
   @moduledoc """
-  Constrói a matriz de adjacência normalizada `Ã = D^(-1/2) · A · D^(-1/2)`
+  Constrói a matriz de adjacência normalizada `Ã = D^(-1/2) · W · D^(-1/2)`
   para um grafo bipartido user↔item, no formato esperado pelo LightGCN.
 
-  ## Estrutura de A
+  ## Estrutura de W
 
-      A = [  0    R  ]    shape (M+N) × (M+N)
+      W = [  0    R  ]    shape (M+N) × (M+N)
           [ R^T   0  ]
 
-  onde M = número de usuários, N = número de itens, e R[u,i] = 1
-  se o usuário u interagiu com o item i.
+  onde M = número de usuários, N = número de itens, e R[u,i] é o peso
+  agregado das interações entre o usuário u e o item i. Quando múltiplas
+  arestas conectam o mesmo par (ex.: like + comentário), os pesos são
+  somados — interpretação: cada interação positiva adiciona evidência
+  ao sinal user↔item.
 
   ## Particionamento por user_prefix
 
@@ -70,20 +73,21 @@ defmodule MeliGraph.LightGCN.Matrix do
         {:error, :empty_graph}
 
       true ->
-        case collect_positive_pairs(conf, users, items) do
+        case collect_weighted_pairs(conf, users, items) do
           [] ->
             {:error, :empty_graph}
 
-          pairs ->
-            adj = build_adjacency(pairs, user_count + item_count)
+          weighted_pairs ->
+            adj = build_adjacency(weighted_pairs, user_count + item_count)
             adj_norm = normalize(adj)
+            positive_pairs = Enum.map(weighted_pairs, fn {u, i, _w} -> {u, i} end)
 
             {:ok,
              %{
                adj_norm: adj_norm,
                user_index: users,
                item_index: items,
-               positive_pairs: pairs,
+               positive_pairs: positive_pairs,
                user_count: user_count,
                item_count: item_count,
                node_count: user_count + item_count
@@ -120,38 +124,43 @@ defmodule MeliGraph.LightGCN.Matrix do
     {users, items}
   end
 
-  # Lê todas as arestas dos segmentos, normaliza para `(user_row, item_row)`
-  # canônicos e descarta arestas que não cruzam o particionamento.
-  # Como o Melivra insere ambos os sentidos, deduplicamos no final.
-  defp collect_positive_pairs(conf, users, items) do
+  # Lê todas as arestas LTR dos segmentos (rtl é redundante: cada aresta
+  # lógica aparece uma única vez em ltr), filtra as que cruzam o
+  # particionamento user↔item e soma pesos por par. Múltiplas interações no
+  # mesmo par (like + comentário, etc.) acumulam — assim like (1.0) +
+  # comentário (1.5) na mesma dupla vira `weight = 2.5`.
+  defp collect_weighted_pairs(conf, users, items) do
     conf
     |> SegmentManager.all_segments()
     |> Enum.flat_map(fn segment -> :ets.tab2list(segment.ltr) end)
-    |> Enum.flat_map(fn {src, dst, _edge_type} ->
+    |> Enum.reduce(%{}, fn {src, dst, _edge_type, weight}, acc ->
       cond do
         Map.has_key?(users, src) and Map.has_key?(items, dst) ->
-          [{users[src], items[dst]}]
+          Map.update(acc, {users[src], items[dst]}, weight, &(&1 + weight))
 
         Map.has_key?(items, src) and Map.has_key?(users, dst) ->
-          [{users[dst], items[src]}]
+          Map.update(acc, {users[dst], items[src]}, weight, &(&1 + weight))
 
         true ->
-          []
+          acc
       end
     end)
-    |> Enum.uniq()
+    |> Enum.map(fn {{u, i}, w} -> {u, i, w} end)
   end
 
-  # Constrói A como tensor denso `n × n` usando indexed_put.
-  # Cada par positivo (u, i) gera duas entradas: A[u,i] = 1 e A[i,u] = 1
-  # (matriz bipartida simétrica).
-  defp build_adjacency(pairs, n) do
+  # Constrói W como tensor denso `n × n` usando indexed_put.
+  # Cada par positivo (u, i, w) gera duas entradas: W[u,i] = w e W[i,u] = w
+  # (matriz bipartida simétrica e ponderada).
+  defp build_adjacency(weighted_pairs, n) do
     indices =
-      pairs
-      |> Enum.flat_map(fn {u, i} -> [[u, i], [i, u]] end)
+      weighted_pairs
+      |> Enum.flat_map(fn {u, i, _w} -> [[u, i], [i, u]] end)
       |> Nx.tensor(type: :s64)
 
-    values = Nx.broadcast(1.0, {length(pairs) * 2})
+    values =
+      weighted_pairs
+      |> Enum.flat_map(fn {_u, _i, w} -> [w, w] end)
+      |> Nx.tensor(type: :f32)
 
     0.0
     |> Nx.broadcast({n, n})

@@ -52,37 +52,42 @@ defmodule MeliGraph.Graph.Segment do
   end
 
   @doc """
-  Insere uma aresta no segmento. Retorna `{:ok, segment}` se sucesso
+  Insere uma aresta com peso no segmento. Retorna `{:ok, segment}` se sucesso
   ou `:full` se o segmento atingiu a capacidade máxima.
   """
-  @spec insert(t(), non_neg_integer(), non_neg_integer(), atom()) :: {:ok, t()} | :full
-  def insert(%{edge_count: count, max_edges: max}, _source, _target, _type)
+  @spec insert(t(), non_neg_integer(), non_neg_integer(), atom(), float()) ::
+          {:ok, t()} | :full
+  def insert(segment, source, target, edge_type, weight \\ 1.0)
+
+  def insert(%{edge_count: count, max_edges: max}, _source, _target, _type, _weight)
       when count >= max do
     :full
   end
 
-  def insert(%{ltr: ltr, rtl: rtl, edge_count: count} = segment, source, target, edge_type) do
-    :ets.insert(ltr, {source, target, edge_type})
-    :ets.insert(rtl, {target, source, edge_type})
+  def insert(%{ltr: ltr, rtl: rtl, edge_count: count} = segment, source, target, edge_type, weight) do
+    :ets.insert(ltr, {source, target, edge_type, weight})
+    :ets.insert(rtl, {target, source, edge_type, weight})
     {:ok, %{segment | edge_count: count + 1}}
   end
 
   @doc """
   Retorna os vizinhos de saída (outgoing) de um vértice neste segmento.
+  Cada entrada é `{target, type, weight}`.
   """
-  @spec neighbors_out(t(), non_neg_integer()) :: [{non_neg_integer(), atom()}]
+  @spec neighbors_out(t(), non_neg_integer()) :: [{non_neg_integer(), atom(), float()}]
   def neighbors_out(%{ltr: ltr}, source) do
     :ets.lookup(ltr, source)
-    |> Enum.map(fn {_source, target, type} -> {target, type} end)
+    |> Enum.map(fn {_source, target, type, weight} -> {target, type, weight} end)
   end
 
   @doc """
   Retorna os vizinhos de entrada (incoming) de um vértice neste segmento.
+  Cada entrada é `{source, type, weight}`.
   """
-  @spec neighbors_in(t(), non_neg_integer()) :: [{non_neg_integer(), atom()}]
+  @spec neighbors_in(t(), non_neg_integer()) :: [{non_neg_integer(), atom(), float()}]
   def neighbors_in(%{rtl: rtl}, target) do
     :ets.lookup(rtl, target)
-    |> Enum.map(fn {_target, source, type} -> {source, type} end)
+    |> Enum.map(fn {_target, source, type, weight} -> {source, type, weight} end)
   end
 
   @doc """
@@ -90,7 +95,7 @@ defmodule MeliGraph.Graph.Segment do
   """
   @spec neighbors_out(t(), non_neg_integer(), atom()) :: [non_neg_integer()]
   def neighbors_out(%{ltr: ltr}, source, edge_type) do
-    :ets.match(ltr, {source, :"$1", edge_type})
+    :ets.match(ltr, {source, :"$1", edge_type, :_})
     |> List.flatten()
   end
 
@@ -99,7 +104,7 @@ defmodule MeliGraph.Graph.Segment do
   """
   @spec neighbors_in(t(), non_neg_integer(), atom()) :: [non_neg_integer()]
   def neighbors_in(%{rtl: rtl}, target, edge_type) do
-    :ets.match(rtl, {target, :"$1", edge_type})
+    :ets.match(rtl, {target, :"$1", edge_type, :_})
     |> List.flatten()
   end
 

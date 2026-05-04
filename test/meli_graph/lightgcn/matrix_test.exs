@@ -145,6 +145,45 @@ defmodule MeliGraph.LightGCN.MatrixTest do
     end
   end
 
+  describe "build/2 — pesos" do
+    test "peso da aresta é incorporado em W antes da normalização", %{name: name, conf: conf} do
+      # u1 ↔ i1 com peso 4.0; u1 ↔ i2 com peso 1.0; u2 ↔ i1 com peso 1.0
+      # graus ponderados: u1 = 5, u2 = 1, i1 = 5, i2 = 1
+      # Ã[u1, i1] = 4 / (√5 · √5) = 4/5 = 0.8
+      # Ã[u1, i2] = 1 / (√5 · √1) = 1/√5
+      # Ã[u2, i1] = 1 / (√1 · √5) = 1/√5
+      MeliGraph.insert_edge(name, "profile:1", "post:a", :curtiu, 4.0)
+      MeliGraph.insert_edge(name, "profile:1", "post:b", :curtiu, 1.0)
+      MeliGraph.insert_edge(name, "profile:2", "post:a", :curtiu, 1.0)
+
+      {:ok, result} = Matrix.build(conf, "profile:")
+
+      u1 = Map.fetch!(result.user_index, internal_id(conf, "profile:1"))
+      u2 = Map.fetch!(result.user_index, internal_id(conf, "profile:2"))
+      i_a = Map.fetch!(result.item_index, internal_id(conf, "post:a"))
+      i_b = Map.fetch!(result.item_index, internal_id(conf, "post:b"))
+
+      assert_in_delta adj_at(result.adj_norm, u1, i_a), 0.8, 1.0e-6
+      assert_in_delta adj_at(result.adj_norm, u1, i_b), 1.0 / :math.sqrt(5.0), 1.0e-6
+      assert_in_delta adj_at(result.adj_norm, u2, i_a), 1.0 / :math.sqrt(5.0), 1.0e-6
+    end
+
+    test "múltiplas interações no mesmo par somam pesos", %{name: name, conf: conf} do
+      # Like (1.0) + comentário (1.5) na mesma dupla → W[u,i] = 2.5
+      # Sem outra aresta, deg(u) = deg(i) = 2.5
+      # Ã[u, i] = 2.5 / (√2.5 · √2.5) = 1.0
+      MeliGraph.insert_edge(name, "profile:1", "post:a", :like, 1.0)
+      MeliGraph.insert_edge(name, "profile:1", "post:a", :comment, 1.5)
+
+      {:ok, result} = Matrix.build(conf, "profile:")
+
+      u = Map.fetch!(result.user_index, internal_id(conf, "profile:1"))
+      i = Map.fetch!(result.item_index, internal_id(conf, "post:a"))
+
+      assert_in_delta adj_at(result.adj_norm, u, i), 1.0, 1.0e-6
+    end
+  end
+
   # --- helpers ---
 
   defp get_conf(name) do
