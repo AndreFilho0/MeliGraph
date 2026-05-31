@@ -26,8 +26,11 @@ defmodule MeliGraph.Telemetry do
     * `[:meli_graph, :reconciler, :reassert]` — o reconciliador detectou um grafo
       sem dono além do `reconcile_grace` e re-disparou a alocação (rede de
       segurança do failover). Measurements: `%{missing_ms}`. Metadata: `%{name, node}`.
+    * `[:meli_graph, :reconciler, :reap]` — o reconciliador detectou uma árvore
+      **duplicada** neste nó (o dono `:unique` vive em outro nó vivo) e a encerrou,
+      desfazendo uma corrida de boot/split. Metadata: `%{name, node, owner_node}`.
 
-  Os três últimos são eventos pontuais (`:telemetry.execute/3`), não spans.
+  Os quatro últimos são eventos pontuais (`:telemetry.execute/3`), não spans.
   """
 
   @doc """

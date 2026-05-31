@@ -47,15 +47,24 @@ defmodule MeliGraph.Supervisor do
     conf
   end
 
+  @doc """
+  Nome registrado (local, por nó) do processo raiz da árvore da instância `name`.
+
+  Fixo e determinístico (`Module.concat(name, Supervisor)`): qualquer nó sabe, sem
+  ambiguidade, se hospeda uma árvore local viva via
+  `Process.whereis(local_name(name))`. É o que o `MeliGraph.Reconciler` usa para
+  detectar e reapar duplicatas no modo `:horde`.
+  """
+  @spec local_name(atom()) :: module()
+  def local_name(name), do: Module.concat(name, Supervisor)
+
   defp maybe_add_plugins(children, %Config{testing: :sync}), do: children
 
   defp maybe_add_plugins(children, conf) do
     children ++ [{MeliGraph.Plugins.Supervisor, conf: conf}]
   end
 
-  defp supervisor_name(%Config{name: name}) do
-    Module.concat(name, Supervisor)
-  end
+  defp supervisor_name(%Config{name: name}), do: local_name(name)
 
   defp registry_name(name) do
     Module.concat(name, Registry)

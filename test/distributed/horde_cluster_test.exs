@@ -120,6 +120,83 @@ defmodule MeliGraph.HordeClusterTest do
     assert wait_until(fn -> safe_edge_count(name) == 3 end, 30_000)
   end
 
+  # O reaper (MeliGraph.Reconciler) desfaz a corrida de boot/split: o
+  # Horde.Registry (:unique) é um árbitro forte que converge para UM dono; o
+  # start_child do Horde.DynamicSupervisor é a parte fraca que pode subir árvores
+  # duplicadas. A cada tick, quem tem árvore local mas perdeu a eleição do
+  # Registry reapa a própria árvore. Aqui injetamos uma duplicata sintética num
+  # nó não-dono e provamos que ela morre, convergindo para uma única árvore.
+  test "reaper: duplicata num nó não-dono é encerrada (corrida de boot/split)",
+       %{peers: peers} do
+    name = uname()
+    opts = reaper_opts(name)
+    peer_nodes = Enum.map(peers, fn {_pid, n} -> n end)
+    all_nodes = [node() | peer_nodes]
+    local_name = MeliGraph.Supervisor.local_name(name)
+
+    # Fiação de produção: Reconciler em TODOS os nós (o reaper roda em todo lugar).
+    {:ok, _} = MeliGraph.start_link(opts)
+    Enum.each(peer_nodes, fn n -> {:ok, _} = ClusterHelpers.start_instance_on(n, opts) end)
+
+    # Converge para um dono único, pronto e visível de todos os nós.
+    assert wait_until(fn -> owner_node(name) != nil end, 10_000)
+    owner = owner_node(name)
+    assert wait_until(fn -> MeliGraph.ready?(name) end, 10_000)
+
+    assert wait_until(
+             fn ->
+               Enum.all?(all_nodes, fn n ->
+                 case :erpc.call(n, Distributed, :lookup_owner, [name]) do
+                   {:ok, pid, _} -> node(pid) == owner
+                   :error -> false
+                 end
+               end)
+             end,
+             10_000
+           )
+
+    # Estado limpo: SÓ o dono tem árvore local (cobre uma eventual duplicata da
+    # própria corrida de boot, já reapada) antes de injetarmos a nossa.
+    assert wait_until(fn -> only_owner_has_tree?(all_nodes, owner, local_name) end, 15_000)
+
+    non_owner = Enum.find(all_nodes, &(&1 != owner))
+    refute is_nil(non_owner)
+
+    # Captura o evento de reap (handler roda NO nó não-dono; encaminha ao test pid).
+    handler_id = "reap-#{System.unique_integer([:positive])}"
+
+    :ok =
+      :erpc.call(non_owner, :telemetry, :attach, [
+        handler_id,
+        [:meli_graph, :reconciler, :reap],
+        &ClusterHelpers.forward_telemetry/4,
+        self()
+      ])
+
+    # Injeta a árvore zumbi no nó não-dono.
+    {:ok, zombie} = ClusterHelpers.inject_duplicate_on(non_owner, opts)
+    assert :erpc.call(non_owner, Process, :whereis, [local_name]) == zombie
+
+    # O reaper encerra a duplicata em 1-2 ticks e emite a telemetria correta.
+    assert_receive {:telemetry, [:meli_graph, :reconciler, :reap], meta}, 10_000
+    assert meta.name == name
+    assert meta.node == non_owner
+    assert meta.owner_node == owner
+
+    assert wait_until(
+             fn -> :erpc.call(non_owner, Process, :whereis, [local_name]) == nil end,
+             10_000
+           )
+
+    # Estado convergido: exatamente UMA árvore (no dono original), sem dupla-carga
+    # (edge_count roteia para o dono :unique = 3 do seed, não 6).
+    assert owner_node(name) == owner
+    assert only_owner_has_tree?(all_nodes, owner, local_name)
+    assert MeliGraph.edge_count(name) == 3
+
+    :erpc.call(non_owner, :telemetry, :detach, [handler_id])
+  end
+
   test "degradação: distribution: :horde sem cluster sobe árvore local" do
     # Num nó isolado (sem contexto distribuído visível para um nome novo), a API
     # continua funcionando; aqui validamos via o caminho local explícito.
@@ -135,6 +212,21 @@ defmodule MeliGraph.HordeClusterTest do
   end
 
   # --- helpers ---
+
+  # Opts do teste do reaper: como seeded_opts, mas com tick/grace curtos para o
+  # reaper agir em ~sub-segundo. Idênticos por nó (contrato de ensure_started).
+  defp reaper_opts(name) do
+    [reconcile_interval: 300, reconcile_grace: 600] ++ seeded_opts(name)
+  end
+
+  # `true` quando exatamente o nó `owner` hospeda a árvore local `local_name` e
+  # nenhum outro nó a hospeda.
+  defp only_owner_has_tree?(all_nodes, owner, local_name) do
+    Enum.all?(all_nodes, fn n ->
+      has_tree? = is_pid(:erpc.call(n, Process, :whereis, [local_name]))
+      if n == owner, do: has_tree?, else: not has_tree?
+    end)
+  end
 
   defp start_until_owned_by_peer(peers, attempt \\ 0)
 

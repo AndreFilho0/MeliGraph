@@ -107,6 +107,54 @@ defmodule MeliGraph.ClusterHelpers do
     MeliGraph.start_link(Keyword.put_new(opts, :distribution, :horde))
   end
 
+  @doc """
+  Inicia uma instância (e seu `Reconciler`) **num nó específico**, sob um holder
+  que sobrevive ao retorno do `:erpc`. Espelha a fiação de produção, onde TODO nó
+  adiciona `{MeliGraph, name: ..., distribution: :horde}` à própria árvore — logo
+  todo nó roda um `Reconciler` (e, com ele, o reaper de duplicata).
+  """
+  def start_instance_on(node, opts) do
+    :erpc.call(node, __MODULE__, :hold, [MeliGraph, :start_link, [opts]])
+  end
+
+  @doc """
+  Injeta uma árvore local "crua" (`MeliGraph.Supervisor.start_link/1`) num nó —
+  uma **duplicata** sintética, como a que uma corrida de boot/split produziria.
+  Sob um holder não-linkado ao `:erpc` para sobreviver até o reaper agir.
+  """
+  def inject_duplicate_on(node, opts) do
+    :erpc.call(node, __MODULE__, :hold, [MeliGraph.Supervisor, :start_link, [opts]])
+  end
+
+  @doc false
+  # Roda no nó alvo: sobe `mod.fun(args)` dentro de uma Task NÃO-linkada ao
+  # processo efêmero do `:erpc` e devolve o resultado do start. A Task dorme para
+  # sempre, mantendo a árvore (linkada a ela) viva pelo tempo do teste.
+  def hold(mod, fun, args) do
+    ref = make_ref()
+    parent = self()
+
+    {:ok, _holder} =
+      Task.start(fn ->
+        res = apply(mod, fun, args)
+        send(parent, {ref, res})
+        Process.sleep(:infinity)
+      end)
+
+    receive do
+      {^ref, res} -> res
+    after
+      10_000 -> raise "#{inspect(mod)}.#{fun} failed to start on #{inspect(node())}"
+    end
+  end
+
+  @doc false
+  # Handler de telemetria portável entre nós (capture `&Mod.fun/4` vira MFA, não
+  # closure): encaminha o evento para o `test_pid` (que pode viver noutro nó).
+  def forward_telemetry(event, _measurements, meta, test_pid) do
+    send(test_pid, {:telemetry, event, meta})
+  end
+
   # --- internals ---
 
   defp start_peer(i) do

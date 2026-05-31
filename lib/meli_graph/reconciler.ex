@@ -29,6 +29,20 @@ defmodule MeliGraph.Reconciler do
   qualquer árvore viva (id estável OU randomizado) e nos mantém fora do caminho
   quando o Horde já recuperou. O `reconcile_grace` (> recuperação normal do Horde)
   fecha a janela de sobreposição.
+
+  **Reaper de duplicata (corrida de boot/split).** O `start_child` do
+  `Horde.DynamicSupervisor` é a parte **fraca/eventual**: sob boot simultâneo de
+  2-3 nós (cada um chamando `ensure_started/1` antes do CRDT convergir), mais de
+  um nó pode subir a árvore localmente → grafos **zumbis** duplicados (e o bug de
+  soma de pesos da v0.2.x). O `Horde.Registry` (`:unique`), por outro lado, é um
+  **árbitro forte**: converge para UM dono de forma confiável. Logo, a cada tick,
+  se `lookup_owner/1` aponta o dono num **outro nó vivo** e eu tenho uma árvore
+  **local viva** (`Process.whereis(MeliGraph.Supervisor.local_name(name))`), então
+  EU sou o zumbi (perdi a eleição do Registry) → reapo minha árvore local
+  (`Distributed.reap_local/1`). Isso não luta com timing: deixa o Registry decidir
+  o vencedor (sempre converge) e só varre os perdedores — em 1-2 ticks todo
+  duplicado de boot morre, independentemente de como surgiu. Emite
+  `[:meli_graph, :reconciler, :reap]` quando atua.
   """
 
   use GenServer
@@ -77,12 +91,51 @@ defmodule MeliGraph.Reconciler do
   def handle_info(:tick, state) do
     new_state =
       case Distributed.lookup_owner(state.conf.name) do
-        {:ok, _pid, _conf} -> %{state | missing_since: nil}
-        :error -> handle_missing(state)
+        {:ok, owner_pid, _conf} ->
+          maybe_reap_duplicate(state.conf, owner_pid)
+          %{state | missing_since: nil}
+
+        :error ->
+          handle_missing(state)
       end
 
     schedule(new_state.interval)
     {:noreply, new_state}
+  end
+
+  # Reaper de duplicata: o dono registrado vive em OUTRO nó vivo e mesmo assim eu
+  # tenho uma árvore local viva → sou o zumbi (perdi a eleição `:unique`) → reapo.
+  # Ver o moduledoc para a justificativa (Registry forte vs. start_child fraco).
+  defp maybe_reap_duplicate(%Config{name: name}, owner_pid) do
+    owner_node = node(owner_pid)
+    local = Process.whereis(MeliGraph.Supervisor.local_name(name))
+
+    if is_pid(local) and owner_node != node() and remote_alive?(owner_node) do
+      reap(name, local, owner_node)
+    end
+
+    :ok
+  end
+
+  # Guarda contra falso-positivo no failover: uma entrada stale do Registry pode
+  # apontar para o nó dono já morto antes do CRDT dropá-la. Só reapo se o dono
+  # registrado está num nó CONECTADO (competidor real), não num nó caído — nesse
+  # caso quem age é o caminho de re-assert (handle_missing), não o reaper.
+  defp remote_alive?(owner_node), do: owner_node in [node() | Node.list()]
+
+  defp reap(name, local_pid, owner_node) do
+    Logger.warning(
+      "MeliGraph: graph #{inspect(name)} is owned by #{inspect(owner_node)} but a local " <>
+        "tree is alive on #{inspect(node())} — reaping duplicate (boot/split race)"
+    )
+
+    :telemetry.execute(
+      [:meli_graph, :reconciler, :reap],
+      %{},
+      %{name: name, node: node(), owner_node: owner_node}
+    )
+
+    Distributed.reap_local(local_pid)
   end
 
   # Primeira observação de ausência: marca o instante e espera o grace.

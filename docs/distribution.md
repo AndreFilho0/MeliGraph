@@ -106,6 +106,17 @@ o grafo está indisponível — a fonte da verdade é o Postgres + `on_ready` (r
   (~1s) ou pelo reconciliador (~`grace`). O guard por `lookup_owner` (registro no
   `conf.name` estável) evita dupla-alocação mesmo com o `randomize_child_id` do
   handoff do Horde. Emite `[:meli_graph, :reconciler, :reassert]` quando atua.
+- **Reaper de duplicata (`MeliGraph.Reconciler`):** o `start_child` do
+  `Horde.DynamicSupervisor` é a parte fraca/eventual — sob boot simultâneo de 2-3
+  nós (cada um chamando `ensure_started/1` antes do CRDT convergir) mais de um nó
+  pode subir a árvore localmente → grafos **zumbis** duplicados (e o bug de soma de
+  pesos da v0.2.x). O `Horde.Registry` (`:unique`), por outro lado, é um **árbitro
+  forte**: converge para UM dono de forma confiável. Por isso, a cada tick, o nó
+  que tem árvore local viva mas cujo dono `:unique` vive em **outro nó vivo**
+  reconhece-se como o perdedor e **reapa a própria árvore** (`terminate_child`, ou
+  `Supervisor.stop` se ela não for mais um filho do Horde). Em 1-2 ticks todo
+  duplicado de boot morre, sem lutar com timing. Emite
+  `[:meli_graph, :reconciler, :reap]` quando atua.
 - **`train_embeddings/2`** é longo: roteie no dono (`owner_node/1`) com timeout
   generoso.
 
@@ -143,13 +154,17 @@ nó e `edge_count` volta ao esperado (rebuild via `on_ready`).
   reconciliador precisa atuar, ~`reconcile_grace` + `reconcile_interval` + rebuild.
   Ajuste os dois via `Config` se precisar recuperação mais agressiva (ao custo de
   aproximar a janela de dupla-alocação descrita abaixo).
-- **Dupla-alocação (rara):** se o handoff do Horde e o reconciliador disparam na
-  mesma janela, pode subir uma 2ª árvore-zumbi (memória + um `on_ready` extra; sem
-  tráfego, pois não vence o registro `:unique`). O `reconcile_grace` (> ~1-2s da
-  recuperação do Horde) torna isso improvável; não há limpeza automática do zumbi.
+- **Dupla-alocação (auto-reconciliada):** se um boot/split simultâneo ou um
+  handoff do Horde fazem subir uma 2ª árvore-zumbi (memória + um `on_ready` extra;
+  sem tráfego, pois não vence o registro `:unique`), o **reaper do reconciliador**
+  a encerra em 1-2 ticks (~`reconcile_interval`), convergindo para uma única
+  árvore. O lado perdedor é escolhido pelo árbitro forte (`Horde.Registry`
+  `:unique`), não por timing.
 - **Eventual consistency da descoberta:** janela de ms (delta_crdt); tratada com
-  retry/backoff no Router. Sob netsplit, o comportamento é reconciliado-do-Postgres
-  no heal (sem merge CRDT de estado de grafo — fora de escopo da v0.3).
+  retry/backoff no Router. Sob netsplit com escritas dos dois lados, cada partição
+  serve do seu próprio grafo; no heal o `:unique` reelege um dono e o reaper
+  encerra a partição perdedora (que é reconciliada-do-Postgres no próximo
+  `on_ready`; sem merge CRDT de estado de grafo — fora de escopo da v0.3).
 - **Tráfego entre nós** depende do cookie Erlang; em produção, mesma VPC/região
   ou malha tipo WireGuard.
 
@@ -161,5 +176,7 @@ mix test --include distributed
 ```
 
 A suíte `test/distributed/horde_cluster_test.exs` sobe um cluster `:peer` real e
-valida descoberta cross-node, insert/recommend remoto, failover + rebuild e
-degradação para `:local`.
+valida descoberta cross-node, insert/recommend remoto, failover + rebuild,
+**reaping de duplicata** (injeta uma árvore zumbi num nó não-dono e prova que ela
+morre, convergindo para uma única árvore sem dupla-carga) e degradação para
+`:local`.

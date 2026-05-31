@@ -5,6 +5,35 @@ Todas as mudanças notáveis deste projeto são documentadas aqui.
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e o projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.3.1] — 2026-05-31
+
+Correção no modo distribuído: **reaper de duplicata** no `MeliGraph.Reconciler`.
+Aditivo e não-breaking; só afeta `distribution: :horde`.
+
+### Fixed
+
+- **Grafos zumbis/duplicados sob boot/split simultâneo.** O `start_child` do
+  `Horde.DynamicSupervisor` é eventual: quando 2-3 nós sobem ao mesmo tempo (cada
+  um chamando `ensure_started/1` antes do CRDT do Horde convergir), mais de um nó
+  podia subir a árvore localmente → grafos duplicados, disparando o bug de soma de
+  pesos da v0.2.x. O `Horde.Registry` (`:unique`), porém, converge para UM dono de
+  forma confiável. O `MeliGraph.Reconciler` agora, a cada tick, detecta quando
+  **este** nó tem uma árvore local viva mas o dono `:unique` vive em **outro nó
+  vivo** (ou seja, este nó perdeu a eleição) e **reapa a própria árvore**
+  (`Horde.DynamicSupervisor.terminate_child/2`, ou `Supervisor.stop/3` se ela não
+  for mais um filho do Horde). Converge para uma única árvore em 1-2 ticks, sem
+  depender de timing/stagger no boot.
+
+### Added
+
+- **`[:meli_graph, :reconciler, :reap]`** — evento de telemetria pontual emitido
+  quando o reaper encerra uma duplicata. Metadata: `%{name, node, owner_node}`.
+- **`MeliGraph.Supervisor.local_name/1`** — nome registrado (por nó) da árvore
+  local de uma instância; fonte única de verdade usada pelo reaper.
+- **`MeliGraph.Distributed.reap_local/1`** — encerra a árvore local de uma
+  duplicata (mecanismo do reaper).
+- Teste multi-nó `:peer` do reaper em `test/distributed/horde_cluster_test.exs`.
+
 ## [0.3.0] — 2026-05-31
 
 Modo distribuído **opt-in** via Horde. Aditivo e **não-breaking**: o default

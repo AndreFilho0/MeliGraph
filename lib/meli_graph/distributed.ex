@@ -134,6 +134,42 @@ defmodule MeliGraph.Distributed do
     end
   end
 
+  @doc """
+  Reapa (encerra) a árvore local `pid` de uma instância **duplicada**.
+
+  Chamado pelo `MeliGraph.Reconciler` quando detecta que **este** nó hospeda uma
+  árvore "zumbi": viva localmente, porém o `Horde.Registry` (árbitro `:unique`,
+  forte e convergente) aponta o dono num **outro** nó vivo. Caminho normal: a
+  duplicata foi posta aqui pelo `Horde.DynamicSupervisor` numa corrida de
+  boot/split, então `terminate_child/2` a remove do supervisor **e do CRDT** sem
+  reinício (id estável + `restart: :transient`). Fallback `{:error, :not_found}`:
+  a árvore não é (mais) um filho do Horde — encerra direto via `Supervisor.stop/3`.
+
+  Idempotente e tolerante a corridas: o `pid` pode já ter morrido entre a detecção
+  e o reaping, e o `Horde.DynamicSupervisor` pode estar momentaneamente
+  indisponível (re-tenta no próximo tick).
+  """
+  @spec reap_local(pid()) :: :ok
+  def reap_local(pid) when is_pid(pid) do
+    case Horde.DynamicSupervisor.terminate_child(@supervisor, pid) do
+      :ok -> :ok
+      {:error, :not_found} -> stop_stray(pid)
+      {:error, _} -> :ok
+    end
+  catch
+    :exit, _ -> :ok
+  end
+
+  # Árvore local que não é um filho do Horde (start_link direto): encerra pela
+  # raiz. `:shutdown` é exit normal para um supervisor → sem restart e sem deixar
+  # o processo holder vazado nos testes.
+  defp stop_stray(pid) do
+    if Process.alive?(pid), do: Supervisor.stop(pid, :shutdown, 5_000)
+    :ok
+  catch
+    :exit, _ -> :ok
+  end
+
   # Reconstrói as opts serializáveis a partir do conf para o child spec do
   # Horde (que pode ser reiniciado em outro nó). `registry` é derivado em
   # `Config.new/1`, então é descartado aqui.
