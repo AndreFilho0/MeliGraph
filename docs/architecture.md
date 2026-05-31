@@ -94,12 +94,14 @@ MeliGraph.Supervisor (strategy: :rest_for_one)
 │
 ├── MeliGraph.Store.ETS            ← cache de resultados com TTL
 │
-└── MeliGraph.Plugins.Supervisor   ← [SKIP no modo :sync]
-    ├── MeliGraph.Plugins.Pruner
-    └── MeliGraph.Plugins.CacheCleaner
+├── MeliGraph.Plugins.Supervisor   ← [SKIP no modo :sync]
+│   ├── MeliGraph.Plugins.Pruner
+│   └── MeliGraph.Plugins.CacheCleaner
+│
+└── MeliGraph.Bootstrapper         ← rebuild via on_ready (sempre o último)
 ```
 
-A estratégia `rest_for_one` garante que se o `SegmentManager` crashar, o `Writer` e componentes downstream reiniciam junto, evitando inconsistências.
+A estratégia `rest_for_one` garante que se o `SegmentManager` crashar, o `Writer` e componentes downstream reiniciam junto, evitando inconsistências. O `Bootstrapper` é sempre o **último** filho: uma falha no rebuild não derruba o data layer, e uma falha no data layer reinicia o Bootstrapper (que re-roda a MFA `on_ready` sobre uma ETS fresca).
 
 ## Fluxo de Dados
 
@@ -142,3 +144,43 @@ Query Layer
               ├── Contagem de visitas → normalização
               └── Resolução de IDs internos → externos
 ```
+
+## Modo Distribuído (v0.3)
+
+Por padrão a árvore acima é **node-local** (ETS é node-local). O modo distribuído
+(**opt-in**, `distribution: :horde`) aloca cada grafo em **um nó dono** e roteia a
+API de qualquer nó do cluster. Guia operador: [distribution.md](distribution.md);
+design completo: [distributed-v0.3-implementation.md](distributed-v0.3-implementation.md).
+
+```
+API pública (mesma assinatura)
+        │
+        ▼
+MeliGraph.Router (stateless)
+   ├── conf no Registry LOCAL? (modo :local OU este nó é o dono)
+   │        → fast path: chamada direta, ETS direto, multi-reader, zero Horde
+   └── senão (nó remoto) → :erpc.call(dono, Router, :run_local, [...])
+        │ remoto                                       ▲
+        ▼                                              │ run_local roda no dono,
+MeliGraph.Distributed (app adiciona 1×)                │ contra a ETS local
+   ├── Horde.Registry  MeliGraph.HordeRegistry  ───────┘ (mesmo código de hoje)
+   │     descoberta {name → {pid, %Config{}}}
+   └── Horde.DynamicSupervisor  MeliGraph.HordeSupervisor
+         UniformDistribution elege o dono + reinicia no failover
+```
+
+**Por que 1 `:erpc.call` por operação, e não um proxy vizinho-a-vizinho:** as
+leituras de algoritmo passam por `SegmentManager.all_segments/1` (um
+`GenServer.call`) **milhares de vezes** por `recommend`. Proxyar cada lookup por
+RPC seria inviável (latência). Em vez disso, a **operação inteira** (`compute`,
+`insert_edge`, contagens) é enviada ao dono e executa lá contra a ETS local —
+**comando + resultado** cruzam a rede, nunca o acesso ao dado. O cache de
+resultados (`Store.ETS`) mora no dono e absorve a leitura repetida.
+
+**Por que `:erpc.call` e não um `GenServer.call` central:** rotear leitura por um
+único processo serializaria as leituras (mataria o multi-reader). `:erpc.call`
+roda num processo **novo** no dono → ETS concorrente preservada. Escritas seguem
+pelo `Writer` single-writer (invariante preservada).
+
+No modo `:local` (default), `Router` resolve tudo localmente — **zero** overhead
+de Horde/`:erpc`, comportamento byte-a-byte idêntico ao single-node.

@@ -94,8 +94,8 @@ defmodule MeliGraphTest do
       MeliGraph.insert_edge(name, "B", "C", :follow)
       MeliGraph.insert_edge(name, "C", "A", :follow)
 
-      {:ok, recs} = MeliGraph.recommend(name, "A", :users,
-        algorithm: :pagerank, num_walks: 500, top_k: 5)
+      {:ok, recs} =
+        MeliGraph.recommend(name, "A", :users, algorithm: :pagerank, num_walks: 500, top_k: 5)
 
       assert is_list(recs)
       assert length(recs) > 0
@@ -116,6 +116,65 @@ defmodule MeliGraphTest do
       spec = MeliGraph.child_spec(name: :my_graph, graph_type: :directed)
       assert spec.id == :my_graph
       assert spec.type == :supervisor
+    end
+  end
+
+  describe "ready?/1 and on_ready" do
+    test "ready? is true immediately when on_ready is nil" do
+      name = start_test_instance()
+      assert MeliGraph.ready?(name) == true
+    end
+
+    test "on_ready MFA repopulates the graph and flips ready?" do
+      name = unique_name()
+
+      {:ok, _pid} =
+        MeliGraph.start_link(
+          name: name,
+          graph_type: :bipartite,
+          testing: :sync,
+          on_ready: {MeliGraph.TestHelpers, :seed_edges, [name]}
+        )
+
+      assert wait_until(fn -> MeliGraph.ready?(name) end)
+      assert MeliGraph.edge_count(name) == 3
+    end
+  end
+
+  describe "owner_node/1" do
+    test "returns the local node in :local mode" do
+      name = start_test_instance()
+      assert MeliGraph.owner_node(name) == node()
+    end
+
+    test "returns nil for unknown instance" do
+      assert MeliGraph.owner_node(:does_not_exist) == nil
+    end
+  end
+
+  describe "distribution: :horde degradation (no cluster)" do
+    test "starts a normal local tree when the node is not distributed" do
+      # Sem :net_kernel (mix test default), distributed_context?() é false →
+      # distribution: :horde degrada para a árvore local de hoje.
+      if Node.alive?() do
+        # VM já distribuído (ex.: rodando junto com --include distributed): pula.
+        :ok
+      else
+        name = unique_name()
+
+        assert {:ok, pid} =
+                 MeliGraph.start_link(
+                   name: name,
+                   graph_type: :bipartite,
+                   testing: :sync,
+                   distribution: :horde
+                 )
+
+        assert is_pid(pid)
+        MeliGraph.insert_edge(name, "a", "b", :follow)
+        assert MeliGraph.edge_count(name) == 1
+        assert MeliGraph.ready?(name) == true
+      end
     end
   end
 end

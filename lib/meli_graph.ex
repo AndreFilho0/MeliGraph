@@ -26,10 +26,7 @@ defmodule MeliGraph do
       MeliGraph.start_link(name: :interactions, graph_type: :bipartite)
   """
 
-  alias MeliGraph.Ingestion.Writer
-  alias MeliGraph.LightGCN.{EmbeddingStore, Trainer}
-  alias MeliGraph.Query
-  alias MeliGraph.Graph.{IdMap, SegmentManager}
+  alias MeliGraph.Router
 
   @doc """
   Inicia uma instância do MeliGraph com a configuração fornecida.
@@ -45,16 +42,37 @@ defmodule MeliGraph do
   """
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(opts) do
-    MeliGraph.Supervisor.start_link(opts)
+    conf = MeliGraph.Config.new(opts)
+
+    if conf.distribution == :horde and MeliGraph.Distributed.distributed_context?() do
+      # Modo distribuído: o Reconciler aloca a árvore no nó dono via Horde
+      # (consistent hashing) no boot E re-dispara a alocação se o failover do
+      # Horde perder a corrida e deixar o grafo órfão. Ver MeliGraph.Reconciler.
+      MeliGraph.Reconciler.start_link(opts)
+    else
+      # :local OU :horde sem cluster (degrada): árvore local, caminho de hoje.
+      MeliGraph.Supervisor.start_link(opts)
+    end
   end
 
   @doc false
   def child_spec(opts) do
-    %{
-      id: Keyword.fetch!(opts, :name),
-      start: {__MODULE__, :start_link, [opts]},
-      type: :supervisor
-    }
+    name = Keyword.fetch!(opts, :name)
+
+    if Keyword.get(opts, :distribution, :local) == :horde and
+         MeliGraph.Distributed.distributed_context?() do
+      # Em :horde, a alocação é cluster-wide e idempotente — não há um pid de
+      # supervisor local para a árvore do app vigiar. O Reconciler (1 por nó) faz
+      # a alocação no boot e cobre a corrida de failover do Horde (rede de
+      # segurança); é ele que o app supervisiona localmente.
+      MeliGraph.Reconciler.child_spec(opts)
+    else
+      %{
+        id: name,
+        start: {__MODULE__, :start_link, [opts]},
+        type: :supervisor
+      }
+    end
   end
 
   @doc """
@@ -70,8 +88,7 @@ defmodule MeliGraph do
   """
   @spec insert_edge(atom(), term(), term(), atom(), float()) :: :ok
   def insert_edge(name, source, target, edge_type, weight \\ 1.0) do
-    conf = get_conf(name)
-    Writer.insert_edge(conf, source, target, edge_type, weight)
+    Router.route_write(name, :insert_edge, [source, target, edge_type, weight])
   end
 
   @doc """
@@ -87,8 +104,7 @@ defmodule MeliGraph do
   @spec recommend(atom(), term(), atom(), keyword()) ::
           {:ok, [{term(), float()}]} | {:error, term()}
   def recommend(name, entity_id, type, opts \\ []) do
-    conf = get_conf(name)
-    Query.recommend(conf, entity_id, type, opts)
+    Router.route_read(name, :recommend, [entity_id, type, opts])
   end
 
   @doc """
@@ -100,36 +116,7 @@ defmodule MeliGraph do
   """
   @spec neighbors(atom(), term(), :outgoing | :incoming, keyword()) :: [term()]
   def neighbors(name, entity_id, direction, opts \\ []) do
-    conf = get_conf(name)
-
-    case IdMap.get_internal(conf, entity_id) do
-      nil ->
-        []
-
-      internal_id ->
-        edge_type = Keyword.get(opts, :type)
-
-        internal_neighbors =
-          case {direction, edge_type} do
-            {:outgoing, nil} ->
-              SegmentManager.neighbors_out(conf, internal_id)
-              |> Enum.map(fn {id, _type, _weight} -> id end)
-
-            {:incoming, nil} ->
-              SegmentManager.neighbors_in(conf, internal_id)
-              |> Enum.map(fn {id, _type, _weight} -> id end)
-
-            {:outgoing, type} ->
-              SegmentManager.neighbors_out(conf, internal_id, type)
-
-            {:incoming, type} ->
-              SegmentManager.neighbors_in(conf, internal_id, type)
-          end
-
-        internal_neighbors
-        |> Enum.uniq()
-        |> Enum.map(&IdMap.get_external(conf, &1))
-    end
+    Router.route_read(name, :neighbors, [entity_id, direction, opts])
   end
 
   @doc """
@@ -137,8 +124,7 @@ defmodule MeliGraph do
   """
   @spec edge_count(atom()) :: non_neg_integer()
   def edge_count(name) do
-    conf = get_conf(name)
-    SegmentManager.total_edge_count(conf)
+    Router.route_read(name, :edge_count, [])
   end
 
   @doc """
@@ -146,8 +132,7 @@ defmodule MeliGraph do
   """
   @spec vertex_count(atom()) :: non_neg_integer()
   def vertex_count(name) do
-    conf = get_conf(name)
-    IdMap.size(conf)
+    Router.route_read(name, :vertex_count, [])
   end
 
   @doc """
@@ -169,9 +154,9 @@ defmodule MeliGraph do
   """
   @spec train_embeddings(atom(), keyword()) :: {:ok, binary()} | {:error, term()}
   def train_embeddings(name, opts \\ []) do
-    conf = get_conf(name)
+    # Valida o argumento obrigatório no nó chamador (falha cedo, não viaja).
     user_prefix = Keyword.fetch!(opts, :user_prefix)
-    Trainer.train(conf, user_prefix, opts)
+    Router.route_read(name, :train_embeddings, [user_prefix, opts])
   end
 
   @doc """
@@ -182,8 +167,7 @@ defmodule MeliGraph do
   """
   @spec load_embeddings(atom(), binary()) :: :ok | {:error, :invalid_binary}
   def load_embeddings(name, binary) do
-    conf = get_conf(name)
-    EmbeddingStore.load(conf, binary)
+    Router.route_write(name, :load_embeddings, [binary])
   end
 
   @doc """
@@ -194,22 +178,36 @@ defmodule MeliGraph do
   """
   @spec embeddings_ready?(atom()) :: boolean()
   def embeddings_ready?(name) do
-    conf = get_conf(name)
-    EmbeddingStore.ready?(conf)
+    Router.route_read(name, :embeddings_ready?, [])
   end
 
-  # --- Private ---
+  @doc """
+  Retorna `true` quando a instância terminou de reconstruir o grafo via a MFA
+  `on_ready` (ou imediatamente, se `on_ready` for `nil`).
 
-  defp get_conf(name) do
-    registry = Module.concat(name, Registry)
+  Útil para gatear leituras durante o boot frio ou logo após um failover, quando
+  o grafo no nó dono ainda está sendo repovoado da fonte da verdade.
+  """
+  @spec ready?(atom()) :: boolean()
+  def ready?(name) do
+    Router.route_read(name, :ready?, [])
+  end
 
-    case Registry.lookup(registry, :conf) do
-      [{_pid, conf}] ->
-        conf
+  @doc """
+  Retorna o nó que hospeda o grafo: `Node.self()` em `:local` ou no nó dono;
+  o nó dono em `:horde` a partir de outro nó; `nil` se indisponível.
 
-      [] ->
-        raise ArgumentError,
-              "MeliGraph instance #{inspect(name)} not found. Did you start it with MeliGraph.start_link(name: #{inspect(name)}, ...)?"
+  Em modo distribuído, use para escolher onde rodar operações longas como
+  `train_embeddings/2` (treine no dono).
+  """
+  @spec owner_node(atom()) :: node() | nil
+  def owner_node(name) do
+    case Router.resolve_route(name) do
+      {:local, _conf} -> Node.self()
+      {:remote, owner, _conf} -> owner
+      {:error, _} -> nil
     end
+  rescue
+    ArgumentError -> nil
   end
 end

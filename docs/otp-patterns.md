@@ -167,3 +167,22 @@ Registry → ConfigHolder → IdMap → SegmentManager → Writer → Store → 
 ```
 
 Isso evita situações onde o `Writer` continua enviando inserts para tabelas ETS que não existem mais (porque o `SegmentManager` crashou e perdeu suas referências).
+
+## Singleton Distribuído via Horde (v0.3)
+
+O modo distribuído (**opt-in**) reaproveita esses mesmos padrões num cluster:
+
+- **Location transparency parcial:** `:erpc.call` roda a operação inteira no nó
+  dono (descoberto via `Horde.Registry`), contra a ETS local — preserva o
+  multi-reader (processo novo por chamada) e o single-writer (`Writer` no dono).
+- **`Config` serializável** vira metadata no `Horde.Registry` e args do child
+  spec do `Horde.DynamicSupervisor` (id estável `{MeliGraph.Supervisor, name}`).
+- **`rest_for_one` + `on_ready`:** o `Bootstrapper` (último filho) reconstrói o
+  grafo da fonte da verdade no boot e no failover — a ETS sobe vazia no novo dono
+  e a MFA repovoa. Falha de rebuild não derruba o data layer.
+- **Degradação graciosa:** o gate `distributed_context?/0`
+  (`Code.ensure_loaded?(Horde.Registry) and Node.alive?()`) faz
+  `distribution: :horde` cair para `:local` fora de um cluster.
+
+Detalhes em [distribution.md](distribution.md) e
+[architecture.md](architecture.md#modo-distribuído-v03).

@@ -1,7 +1,7 @@
 defmodule MeliGraph.MixProject do
   use Mix.Project
 
-  @version "0.2.1"
+  @version "0.3.0"
   @source_url "https://github.com/AndreFilho0/MeliGraph"
 
   def project do
@@ -54,6 +54,10 @@ defmodule MeliGraph.MixProject do
       {:telemetry, "~> 1.0"},
       {:nx, "~> 0.9"},
       {:exla, "~> 0.9", optional: true},
+      # Modo distribuído (v0.3) — opt-in. delta_crdt/merkle_map vêm transitivos via Horde.
+      # Clustering (libcluster) é responsabilidade do app consumidor.
+      {:horde, "~> 0.10", optional: true},
+      {:libring, "~> 1.7", optional: true},
       {:csv, "~> 3.2", only: :test, runtime: false},
       {:ex_doc, "~> 0.35", only: :dev, runtime: false},
       {:observer_cli, "~> 1.7", only: :dev, runtime: false}
@@ -89,6 +93,12 @@ defmodule MeliGraph.MixProject do
           MeliGraph.Registry,
           MeliGraph.Telemetry,
           MeliGraph.ConfigHolder
+        ],
+        "Distribuição": [
+          MeliGraph.Distributed,
+          MeliGraph.Router,
+          MeliGraph.Bootstrapper,
+          MeliGraph.Reconciler
         ],
         "Plugins": [
           MeliGraph.Plugin,

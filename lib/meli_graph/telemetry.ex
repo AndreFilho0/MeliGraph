@@ -13,6 +13,21 @@ defmodule MeliGraph.Telemetry do
     * `[:meli_graph, :graph, :create_segment, :start | :stop | :exception]`
     * `[:meli_graph, :plugin, :prune, :start | :stop | :exception]`
     * `[:meli_graph, :plugin, :cache_clean, :start | :stop | :exception]`
+
+  ## Eventos do modo distribuído (v0.3)
+
+    * `[:meli_graph, :router, :remote_call, :start | :stop | :exception]` —
+      emitido só no caminho remoto (`:erpc.call` para o nó dono). Metadata:
+      `%{name, op, node}`.
+    * `[:meli_graph, :instance, :started]` — uma árvore de instância subiu neste
+      nó (no dono, em `:horde`). Metadata: `%{name, node, distribution}`.
+    * `[:meli_graph, :instance, :ready]` — a MFA `on_ready` terminou (instância
+      pronta para servir leituras). Metadata: `%{name, node}`.
+    * `[:meli_graph, :reconciler, :reassert]` — o reconciliador detectou um grafo
+      sem dono além do `reconcile_grace` e re-disparou a alocação (rede de
+      segurança do failover). Measurements: `%{missing_ms}`. Metadata: `%{name, node}`.
+
+  Os três últimos são eventos pontuais (`:telemetry.execute/3`), não spans.
   """
 
   @doc """

@@ -9,6 +9,7 @@ defmodule MeliGraph.Supervisor do
   4. Writer (ingestão)
   5. Store.ETS (cache de resultados)
   6. Plugins.Supervisor (tarefas periódicas) — skipped no modo :sync
+  7. Bootstrapper (rebuild via on_ready) — sempre o último filho
   """
 
   use Supervisor
@@ -32,6 +33,7 @@ defmodule MeliGraph.Supervisor do
         {MeliGraph.Store.ETS, conf: conf}
       ]
       |> maybe_add_plugins(conf)
+      |> Kernel.++([{MeliGraph.Bootstrapper, conf: conf}])
 
     Supervisor.init(children, strategy: :rest_for_one)
   end

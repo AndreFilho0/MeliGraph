@@ -133,6 +133,39 @@ Os testes do MeliGraph usam `async: false` porque:
 
 O uso de `unique_name()` mitiga colisões, mas `async: false` é mais seguro para testes que manipulam estado global.
 
+## Testes distribuídos (`:peer`, v0.3)
+
+A suíte do modo distribuído (`test/distributed/horde_cluster_test.exs`) sobe um
+cluster BEAM **real** com `:peer` (OTP 25+) e fica atrás da tag `:distributed`,
+**excluída por default**:
+
+```elixir
+# test_helper.exs
+ExUnit.start(exclude: [:integration, :distributed])
+```
+
+```bash
+epmd -daemon                      # requer o Erlang Port Mapper Daemon
+mix test --include distributed
+```
+
+`test/support/cluster_helpers.ex` torna o VM de teste distribuído
+(`:net_kernel.start`), sobe N peers conectados por distribuição, carrega o code
+path da lib em cada um e inicia `MeliGraph.Distributed` no cluster inteiro.
+
+Pontos de atenção (aprendidos na implementação):
+
+- **Controle remoto via `:erpc.call(node, …)`**, não `:peer.call(pid, …)` — em
+  alguns OTP o segundo não usa a conexão de distribuição e devolve `:noconnection`.
+- **Cluster fresco por teste** (`setup`, não `setup_all`): o teste de failover
+  **mata um peer**, então um cluster compartilhado quebraria os demais. Peers são
+  linkados ao processo do teste → morrem no fim (limpeza automática).
+- **Simular crash, não shutdown:** o failover mata o nó dono com `:erlang.halt`
+  (abrupto). Um `:peer.stop` gracioso sairia com `:shutdown`, que `restart:
+  :transient` **não** reinicia — não exercitaria a realocação.
+- **Janela de consistência:** lookups remotos logo após start/realocação são
+  envolvidos em `wait_until/2` (retry) por causa da propagação do delta_crdt.
+
 ## Cobertura de Testes (v0.1)
 
 | Módulo | Testes | Cobertura |

@@ -15,6 +15,7 @@ Inspirado nos sistemas [WTF (Who to Follow)](https://stanford.edu/~rezab/papers/
 - **LightGCN** — embeddings aprendidos via Nx.Defn + BPR loss (v0.2) com fallback automático para SALSA
 - **Single-writer / multi-reader** via GenServer + ETS
 - **Múltiplas instâncias** isoladas via Registry
+- **Modo distribuído (v0.3)** — opt-in via Horde: cada grafo vive num nó dono (consistent hashing), descoberto cluster-wide, e a API roteia de qualquer nó transparentemente. Default `:local` = comportamento single-node idêntico. Veja [docs/distribution.md](docs/distribution.md)
 - **Telemetry-first** — todas as operações emitem eventos
 - **Modo de testing `:sync`** — testes determinísticos sem processos async
 - **Plugin system** — Pruner, CacheCleaner extensíveis
@@ -24,12 +25,20 @@ Inspirado nos sistemas [WTF (Who to Follow)](https://stanford.edu/~rezab/papers/
 ```elixir
 def deps do
   [
-    {:meli_graph, "~> 0.2.1"},
+    {:meli_graph, "~> 0.3"},
     # Recomendado para o LightGCN em produção:
-    {:exla, "~> 0.9"}    # backend XLA (CPU/GPU) para o trainer
+    {:exla, "~> 0.9"},   # backend XLA (CPU/GPU) para o trainer
+    # Necessário APENAS para o modo distribuído (v0.3, opt-in):
+    {:horde, "~> 0.10"},
+    {:libring, "~> 1.7"}
   ]
 end
 ```
+
+> **Modo distribuído é opt-in.** `:horde`/`:libring` são deps **opcionais** da
+> lib — só precisam ser declaradas pelo app que usa `distribution: :horde`.
+> Sem elas, a MeliGraph roda 100% single-node como antes. Veja
+> [docs/distribution.md](docs/distribution.md).
 
 > **Mudança em v0.2.1:** `:nx` agora é dependência obrigatória do `meli_graph`
 > (era `optional`). Não precisa declará-la nas suas deps — vem transitivamente.
@@ -361,6 +370,11 @@ Eventos emitidos para observabilidade:
 [:meli_graph, :graph, :create_segment, :start | :stop | :exception]
 [:meli_graph, :plugin, :prune, :start | :stop | :exception]
 [:meli_graph, :plugin, :cache_clean, :start | :stop | :exception]
+
+# Modo distribuído (v0.3)
+[:meli_graph, :router, :remote_call, :start | :stop | :exception]  # só no caminho remoto
+[:meli_graph, :instance, :started]   # árvore subiu no nó dono
+[:meli_graph, :instance, :ready]     # MFA on_ready concluída
 ```
 
 ## Testes
@@ -371,7 +385,12 @@ mix test
 ```
 
 ```
-181 tests, 0 failures, 37 excluded (integration)
+198 tests, 0 failures, 41 excluded (integration + distributed)
+```
+
+```bash
+# Testes multi-nó do modo distribuído (requer EPMD: epmd -daemon)
+mix test --include distributed
 ```
 
 Veja [docs/testing.md](docs/testing.md) para testes de integração com dados reais.
@@ -385,6 +404,8 @@ Veja [docs/testing.md](docs/testing.md) para testes de integração com dados re
 - [LightGCN (v0.2)](docs/lightgcn.md) — Arquitetura, fluxo de treino, dependências e validação empírica
 - [Plano LightGCN v0.2](docs/lightgcn-v02-implementation.md) — Plano de implementação fase a fase
 - [Padrões OTP](docs/otp-patterns.md) — Config struct, Registry, plugins, telemetry
+- [Modo Distribuído (v0.3)](docs/distribution.md) — Singleton-per-grafo via Horde, roteamento, failover (guia operador)
+- [Spec de Implementação Distribuída](docs/distributed-v0.3-implementation.md) — Design e plano fase a fase
 - [Testing](docs/testing.md) — Modo `:sync`, helpers, exemplos de testes
 - [API Reference](docs/api-reference.md) — Referência completa da API pública
 
@@ -397,8 +418,11 @@ lib/
 │   ├── config.ex                    # Config struct centralizado
 │   ├── config_holder.ex             # Registra config no Registry
 │   ├── registry.ex                  # Registry helpers
-│   ├── supervisor.ex                # Supervision tree
+│   ├── supervisor.ex                # Supervision tree (+ Bootstrapper como último filho)
 │   ├── telemetry.ex                 # Telemetry spans
+│   ├── distributed.ex               # v0.3 — Horde.Registry + DynamicSupervisor (opt-in)
+│   ├── router.ex                    # v0.3 — roteamento local/remoto via :erpc
+│   ├── bootstrapper.ex              # v0.3 — rebuild via on_ready (boot + failover)
 │   ├── graph/
 │   │   ├── edge.ex                  # Struct de aresta
 │   │   ├── id_map.ex                # Mapeamento de IDs
@@ -508,7 +532,17 @@ tmp/
 - **`:nx` virou dep obrigatória.** Quem usava `meli_graph` só para PageRank
   e listava `{:nx, ..., optional: true}` pode remover essa linha.
 
-### v0.3 (planejado)
+### v0.3 (atual) — Modo distribuído
+- [x] `MeliGraph.Distributed` — Horde.Registry + Horde.DynamicSupervisor (singleton-per-grafo)
+- [x] `MeliGraph.Router` — roteamento transparente; 1 `:erpc.call` por operação no nó dono
+- [x] `MeliGraph.Bootstrapper` — rebuild via MFA `on_ready` no boot e no failover
+- [x] Config `distribution: :local | :horde`, `on_ready`, `cluster_call_timeout`
+- [x] Deps `:horde`/`:libring` opcionais; gate `distributed_context?()` (degrada pra `:local`)
+- [x] API pública inalterada + `ready?/1` e `owner_node/1`; erros `:graph_unavailable`/`:graph_timeout`
+- [x] Telemetry de cluster (`router.remote_call`, `instance.started`, `instance.ready`)
+- [x] Suite multi-nó com `:peer` (tag `:distributed`, `mix test --include distributed`)
+
+### v0.3+ (planejado)
 - [ ] Matriz sparse no LightGCN (escalar para grafos > 50k nós)
 - [ ] Retreinamento incremental (warm start)
 - [ ] Pesos respeitados por PageRank (random walk ponderado) e SALSA
@@ -517,7 +551,9 @@ tmp/
 - [ ] Precomputer plugin
 
 ### v0.4 (futuro)
-- [ ] Peer behaviour + distribuição
+- [ ] Read-replicas opt-in por nó (mitiga hot spot de leitura no dono)
+- [ ] Merge CRDT de estado de grafo em netsplit
+- [ ] Override dos nomes fixos `HordeRegistry`/`HordeSupervisor` (multi-tenant)
 - [ ] Algoritmos adicionais (Node2Vec)
 
 ## Referências
